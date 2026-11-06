@@ -83,6 +83,7 @@ def build_model(cfg: dict):
         pred_depth=m.get("pred_depth", 3),
         pred_hidden=m.get("pred_hidden", 384),
         lamb=m.get("lamb", 0.05),
+        inv_weight=m.get("inv_weight", 0.5),
         stop_grad_target=m.get("stop_grad_target", False),
         sigreg_slices=m.get("sigreg_slices", 256),
     )
@@ -160,7 +161,7 @@ def train(cfg: dict, out_dir: str | Path | None = None) -> Path:
     writer = csv.writer(log_file)
     if new_log:
         writer.writerow(
-            ["step", "epoch", "loss", "pred", "sigreg", "val_pred", "val_std", "lr", "sec"]
+            ["step", "epoch", "loss", "pred", "inv", "sigreg", "val_pred", "val_std", "lr", "sec"]
         )
 
     best = float("inf")
@@ -169,7 +170,7 @@ def train(cfg: dict, out_dir: str | Path | None = None) -> Path:
 
     for epoch in range(tcfg["epochs"]):
         model.train()
-        run_loss = run_pred = run_reg = 0.0
+        run_loss = run_pred = run_reg = run_inv = 0.0
         n_batches = 0
 
         for batch in train_dl:
@@ -194,6 +195,7 @@ def train(cfg: dict, out_dir: str | Path | None = None) -> Path:
 
             run_loss += float(loss.detach())
             run_pred += float(out_dict["pred_loss"])
+            run_inv += float(out_dict.get("inv_loss", torch.zeros(())))
             run_reg += float(out_dict["sigreg_loss"])
             n_batches += 1
             step += 1
@@ -209,6 +211,7 @@ def train(cfg: dict, out_dir: str | Path | None = None) -> Path:
                 epoch,
                 f"{avg:.6f}",
                 f"{run_pred / max(1, n_batches):.6f}",
+                f"{run_inv / max(1, n_batches):.6f}",
                 f"{run_reg / max(1, n_batches):.6f}",
                 f"{val_pred:.6f}",
                 f"{val_std:.6f}",
@@ -219,6 +222,7 @@ def train(cfg: dict, out_dir: str | Path | None = None) -> Path:
         log_file.flush()
         print(
             f"epoch {epoch:3d} | loss {avg:.4f} | pred {run_pred / max(1, n_batches):.4f} "
+            f"| inv {run_inv / max(1, n_batches):.4f} "
             f"| sigreg {run_reg / max(1, n_batches):.4f} | val_pred {val_pred:.4f} "
             f"| val_std {val_std:.3f} | {time.time() - t0:.0f}s"
         )

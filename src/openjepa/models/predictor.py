@@ -161,6 +161,37 @@ class LatentPredictor(nn.Module):
         return self.out(self.out_norm(h))
 
 
+class InverseDynamics(nn.Module):
+    """Предсказывает действие по паре соседних латентов: (z_t, z_{t+1}) → a_t.
+
+    Зачем это нужно. Основная потеря JEPA — предсказание следующего латента —
+    имеет ловушку: энкодер может выбросить **управляемые** факторы, если они
+    не помогают предсказанию. В нашей среде гравитация делает вертикальное
+    движение почти детерминированным, а горизонтальное зависит от действия.
+    Энкодер выучивал только вертикаль: латентное расстояние между мячом
+    слева и справа было 0.76 против 8.0 между верхом и низом. Планировщик
+    физически не мог двигать объект вбок.
+
+    Inverse-dynamics ломает эту симметрию: чтобы восстановить `a_t` из
+    `(z_t, z_{t+1})`, латент обязан содержать всё, на что влияет действие.
+    Это ровно тот приём, который H-JEPA применяет к реальным видео DROID
+    [arXiv:2610.06805], а DINO-WM — к своим средам [arXiv:2411.04983].
+
+    Стоимость — один маленький MLP. Польза — управляемость латента.
+    """
+
+    def __init__(self, dim: int, action_dim: int, hidden: int = 256, depth: int = 2):
+        super().__init__()
+        layers: list[nn.Module] = [nn.Linear(dim * 2, hidden), nn.GELU(approximate="tanh")]
+        for _ in range(depth - 1):
+            layers += [nn.Linear(hidden, hidden), nn.GELU(approximate="tanh")]
+        layers.append(nn.Linear(hidden, action_dim))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, z_t: torch.Tensor, z_next: torch.Tensor) -> torch.Tensor:
+        return self.net(torch.cat([z_t, z_next], dim=-1))
+
+
 class GoalEncoder(nn.Module):
     """Быстрая политика: (текущее состояние, цель) -> действие.
 

@@ -31,6 +31,7 @@ model:
   pred_depth: 3
   pred_hidden: 384
   lamb: 0.05          # вес SIGReg; 0.02-0.1 работает стабильно
+  inv_weight: 0.5     # вес inverse-dynamics: держит в латенте управляемые факторы
   sigreg_slices: 256
   stop_grad_target: false
   hierarchical: false

@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..losses.sigreg import SIGReg
-from .predictor import LatentPredictor, context_windows
+from .predictor import InverseDynamics, LatentPredictor, context_windows
 from .vit import Projector, ViTEncoder
 
 
@@ -43,6 +43,7 @@ class JEPAConfig:
     pred_hidden: int = 384
     # потеря
     lamb: float = 0.05
+    inv_weight: float = 0.5
     stop_grad_target: bool = False
     sigreg_slices: int = 256
     # прочее
@@ -73,6 +74,10 @@ class JEPA(nn.Module):
             horizon=cfg.horizon,
         )
         self.sigreg = SIGReg(num_slices=cfg.sigreg_slices)
+        # Вспомогательная голова: (z_t, z_{t+1}) -> a_t. Нужна, чтобы латент
+        # не выбрасывал факторы, на которые влияет действие. См. docstring
+        # InverseDynamics и docs/14-zhurnal-resheniy.md §8.
+        self.inverse = InverseDynamics(cfg.proj_dim, cfg.action_dim, cfg.pred_hidden)
 
     # ------------------------------------------------------------------ #
     # inference helpers
@@ -156,13 +161,26 @@ class JEPA(nn.Module):
             target = target.detach()
         pred_loss = F.smooth_l1_loss(pred, target)
 
+        # Inverse dynamics: восстанавливаем действие по паре соседних латентов.
+        # Это заставляет энкодер сохранять управляемые факторы (см. класс
+        # InverseDynamics). Без этого латент терял горизонтальную позицию.
+        ni = b * (t - 1)
+        inv_pred = self.inverse(
+            z[:, :-1].reshape(ni, -1), z[:, 1:].reshape(ni, -1)
+        )
+        inv_loss = F.smooth_l1_loss(inv_pred, actions.reshape(ni, -1))
+
         # SIGReg считаем в fp32: статистика — разность близких величин
         # (cos_mean - phi), в bf16 она теряет точность и «шумит».
         reg_loss = self.sigreg(z.float())
-        total = (1.0 - self.cfg.lamb) * pred_loss + self.cfg.lamb * reg_loss
+        total = (
+            (1.0 - self.cfg.lamb) * (pred_loss + self.cfg.inv_weight * inv_loss)
+            + self.cfg.lamb * reg_loss
+        )
         return {
             "loss": total,
             "pred_loss": pred_loss.detach(),
+            "inv_loss": inv_loss.detach(),
             "sigreg_loss": reg_loss.detach(),
         }
 

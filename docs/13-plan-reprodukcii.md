@@ -39,7 +39,7 @@ python -m openjepa.runtime.cli eval  --ckpt runs/toy/best.pt --episodes 20
 
 ### 2.3 Ожидаемые числа
 
-На `configs/pretrain_toy.yaml` (7.5M параметров, 4000 траекторий, 30 эпох):
+На `configs/pretrain_toy.yaml` (7.6M параметров, 4000 траекторий, 30 эпох):
 
 * `pred_loss` — падает с ~0.35 до < 0.05;
 * `sigreg_loss` — держится в коридоре 5–30 (не 0, не взрыв);

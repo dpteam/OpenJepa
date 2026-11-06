@@ -166,7 +166,7 @@ SIGReg(Z) = (1/M) Σ_m EP(a_mᵀ Z)
 
 ## 5. Рецепт обучения (как в коде)
 
-### 5.1 Псевдокод
+### 5.2 Псевдокод
 
 ```python
 for frames, actions in loader:               # (B,T,3,H,W), (B,T-1,A)
@@ -174,10 +174,23 @@ for frames, actions in loader:               # (B,T,3,H,W), (B,T-1,A)
     w = context_windows(z, ctx)              # (B,T,ctx,64) — окно прошлого
     pred = predictor(w[:, :-1], actions)     # (B,T-1,64)
     loss_pred = smooth_l1(pred, z[:, 1:])
+    inv = inverse(z[:, :-1], z[:, 1:])       # (z_t, z_{t+1}) -> a_t
+    loss_inv = smooth_l1(inv, actions)
     loss_reg  = sigreg(z.float())
-    loss = (1 - lamb) * loss_pred + lamb * loss_reg
+    loss = (1-lamb) * (loss_pred + inv_weight*loss_inv) + lamb * loss_reg
     loss.backward(); opt.step()
 ```
+
+Три члена, у каждого своя роль:
+
+| Член | Что заставляет модель делать |
+|---|---|
+| `loss_pred` | предсказывать будущее в латенте (основная цель) |
+| `loss_inv` | сохранять в латенте то, на что влияет действие |
+| `loss_reg` | держать распределение эмбеддингов изотропно-гауссовым |
+
+Без `loss_inv` модель выучивает «удобные» факторы и выбрасывает управляемые
+(подробно: `03-arhitektura.md` §4.2.1).
 
 ### 5.2 Гиперпараметры
 
@@ -186,6 +199,7 @@ for frames, actions in loader:               # (B,T,3,H,W), (B,T-1,A)
 | `lr` | 3e-4 | 1e-4 … 2e-3 | AdamW, cosine |
 | `weight_decay` | 0.05 | 0.01 … 0.1 | только на матрицы |
 | `lamb` | 0.05 | 0.02 … 0.1 | главный рычаг |
+| `inv_weight` | 0.5 | 0.1 … 1.0 | вес inverse-dynamics |
 | `ctx` | 2 | 2 … 4 | без истории нет скорости |
 | `batch_size` | 32 | ≥ 32 | SIGReg шумит на малых батчах |
 | `sigreg_slices` | 256 | 64 … 512 | больше — точнее, дороже |
@@ -210,10 +224,11 @@ for frames, actions in loader:               # (B,T,3,H,W), (B,T-1,A)
 
 ## 6. Диагностика: что смотреть
 
-### 6.1 Три кривые
+### 6.1 Четыре кривые
 
 ```
 pred_loss   ── должна плавно падать
+inv_loss    ── должна падать: латент сохраняет управляемые факторы
 sigreg_loss ── должна держаться в узком коридоре (не 0, не взрыв)
 val_pred    ── должна идти рядом с train pred_loss
 ```
@@ -225,6 +240,8 @@ val_pred    ── должна идти рядом с train pred_loss
 | `sigreg → 0` | коллапс | увеличить `λ`, увеличить батч, проверить BN в проекторе |
 | `sigreg` растёт и не падает | `λ` слишком велик / lr велик | уменьшить `λ` или lr |
 | `pred_loss` стоит на месте | предиктор недообучен / нет контекста | `ctx ≥ 2`, увеличить `pred_hidden`/`depth`, lr |
+| `pred_loss` падает, но планирование не работает | латент выбросил управляемые факторы | `inv_weight` ↑, `tools/probe_latent.py` |
+| `inv_loss` не падает | голова недообучена или действия не влияют на среду | увеличить `inv_weight`, проверить среду |
 | `pred_loss` падает, `val_pred` растёт | переобучение **или** рассогласование BN | `recalibrate_bn()`, потом уже weight decay |
 | `val_pred` в разы хуже train | BN-статистики устарели | `recalibrate_bn()` |
 | loss скачет | батч мал, bf16 шумит | батч ≥ 64, SIGReg в fp32 |

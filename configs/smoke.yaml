@@ -27,6 +27,7 @@ model:
   pred_depth: 2
   pred_hidden: 128
   lamb: 0.05
+  inv_weight: 0.5
   sigreg_slices: 64
   hierarchical: false
 
