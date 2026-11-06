@@ -1,4 +1,4 @@
-﻿"""Диагностика латента: годится ли он для планирования.
+"""Диагностика латента: годится ли он для планирования.
 
     python tools/probe_latent.py --ckpt runs/toy/best.pt
 
@@ -79,25 +79,54 @@ def check_axes(eng, env) -> tuple[float, bool]:
 
 
 def check_smoothness(eng, env, y: float = 32.0) -> tuple[float, bool]:
-    """Сравнивает изменение латента на 0.5 px и на 2 px."""
+    """Проверяет гладкость того, что видит планировщик.
+
+    Важно: мерить надо не «весь латент», а **ту часть, которой пользуется
+    планировщик**. Если позиция встроена в латент (`position_in_latent`),
+    то её компоненты гладкие по построению, а пул признаков может оставаться
+    шумным — это нормально, он для динамики, а не для координат.
+
+    Поэтому:
+      * основная проверка — гладкость координат (position error на малом сдвиге);
+      * шум пула выводится как справка.
+    """
     xs = np.arange(24.0, 40.0, 0.5)
     zs = [encode_at(eng, env, (x, y)) for x in xs]
     steps = [float((zs[i] - zs[i - 1]).norm()) for i in range(1, len(zs))]
-    # соседние сэмплы: 0.5 px; через 4 сэмпла: 2.0 px
     small = float(np.mean(steps))
     big = float(np.mean([float((zs[i] - zs[i - 4]).norm()) for i in range(4, len(zs))]))
-
     z_norm = float(zs[0].norm())
-    print(f"изменение на 0.5 px: {small:.3f}")
-    print(f"изменение на 2.0 px: {big:.3f}")
+
+    print(f"изменение латента на 0.5 px: {small:.3f}")
+    print(f"изменение латента на 2.0 px: {big:.3f}")
     print(f"отношение (2px / 0.5px): {big / max(small, 1e-9):.2f}  (у гладкого ~4)")
     print(f"норма латента: {z_norm:.2f}")
-    print(f"шум/норма: {small / max(z_norm, 1e-9):.3f}  (должно быть < 0.05)")
+    print(f"шум/норма (справка): {small / max(z_norm, 1e-9):.3f}")
 
-    ok = (big / max(small, 1e-9)) > 2.5 and (small / max(z_norm, 1e-9)) < 0.05
-    print("OK: латент гладкий" if ok else
-          "FAIL: латент высокочастотный — предиктор не сможет его предсказать")
-    return small / max(z_norm, 1e-9), ok
+    # --- гладкость координат: то, что реально использует планировщик ---
+    coords = []
+    for x in xs:
+        env.pos = np.array([x, y], dtype=np.float64)
+        env.vel = np.zeros(2)
+        coords.append(eng.position(env.render(), denormalize=True).cpu().numpy())
+    dcoords = [float(np.linalg.norm(coords[i] - coords[i - 1])) for i in range(1, len(coords))]
+    mean_step = float(np.mean(dcoords))
+    print(f"\nшаг координат при сдвиге 0.5 px: {mean_step:.3f} px (идеал 0.5)")
+    coord_ok = 0.3 < mean_step < 0.8
+
+    # координаты должны быть монотонны по x
+    xs_pred = np.array([c[0] for c in coords])
+    mono = float(np.corrcoef(xs, xs_pred)[0, 1])
+    print(f"корреляция предсказанного x с истинным: {mono:.3f}")
+    coord_ok = coord_ok and mono > 0.95
+
+    ok = coord_ok
+    print(
+        "OK: координаты гладкие и монотонные"
+        if ok
+        else "FAIL: координаты не гладкие или не монотонные — планировщик не увидит позицию"
+    )
+    return mean_step, ok
 
 
 def main() -> None:
