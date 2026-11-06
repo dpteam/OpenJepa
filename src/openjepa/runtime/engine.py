@@ -32,7 +32,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ..planning.cem import CEMConfig, CEMPlanner
+from ..planning.cem import CEMConfig, CEMPlanner, CostMode
+from ..data.synthetic import normalize_position
 
 
 @dataclass
@@ -43,6 +44,7 @@ class RuntimeConfig:
     plan_iters: int = 3
     surprise_threshold: float = 0.35
     action_clip: float = 1.0
+    cost_mode: str = "probe"   # "probe" (цель — позиция) или "latent"
 
 
 def _pick_device(name: str) -> torch.device:
@@ -83,14 +85,21 @@ class OpenJEPAEngine:
         self.device = _pick_device(self.rt.device)
         self.model = model.to(self.device).eval()
         self.ctx = model_ctx(self.model)
+        probe = getattr(self.model, "probe", None)
+        mode = CostMode(self.rt.cost_mode)
+        if mode == CostMode.PROBE and probe is None:
+            mode = CostMode.LATENT  # модель без пробы — откатываемся
+        self.cost_mode = mode
         self.planner = CEMPlanner(
             self.model,
             CEMConfig(
                 horizon=self.rt.plan_horizon,
                 n_samples=self.rt.plan_samples,
                 iters=self.rt.plan_iters,
+                mode=mode,
             ),
             action_dim=cfg["model"]["action_dim"],
+            probe=probe,
         )
         self._hist: deque[torch.Tensor] = deque(maxlen=self.ctx)
         self._ctx: torch.Tensor | None = None       # окно, заканчивающееся на t
@@ -133,12 +142,62 @@ class OpenJEPAEngine:
         self._prev_action = None
 
     def set_goal(self, goal) -> None:
-        """Кодирует цель один раз. Принимает кадр или уже готовый латент."""
-        if isinstance(goal, torch.Tensor) and goal.ndim >= 2:
+        """Задаёт цель.
+
+        В режиме `probe` цель — **физическая позиция** объекта, `(P,)` или
+        кадр (тогда позиция извлекается пробой).
+        В режиме `latent` — латент `(D,)` или кадр.
+
+        Позиция — более честная постановка: «мяч в точке X», а не «мяч в
+        точке X с нулевой скоростью». См. research/notes/2026-11-06-goal-definition.md.
+        """
+        if self.cost_mode == CostMode.PROBE:
+            g = self._as_position(goal)
+            self._goal = g.reshape(1, -1)
+            return
+
+        d = self.model.cfg.proj_dim
+        is_latent = isinstance(goal, torch.Tensor) and goal.ndim in (1, 2) and goal.shape[-1] == d
+        if is_latent:
             zg = goal.to(self.device)
         else:
             zg = self.encode(goal)
         self._goal = zg.reshape(1, -1)
+
+    def _as_position(self, goal) -> torch.Tensor:
+        """Приводит цель к нормированному вектору координат в [-1, 1].
+
+        Принимает:
+          * `(P,)` numpy/tensor — позиция (в пикселях или уже нормированная);
+          * кадр `(H,W,3)`, `(C,H,W)`, `(B,C,H,W)` — кодируем и берём пробу.
+        """
+        p_dim = self.planner.probe_dim
+        size = self.cfg.get("data", {}).get("env", {}).get("size", 64)
+
+        if isinstance(goal, torch.Tensor):
+            if goal.ndim in (1, 2) and goal.shape[-1] == p_dim:
+                p = goal.reshape(-1).to(self.device, dtype=torch.float32)
+                # если значения выходят за [-1, 1] — считаем, что это пиксели
+                if float(p.abs().max()) > 1.5:
+                    p = torch.as_tensor(
+                        normalize_position(p.cpu().numpy(), size),
+                        dtype=torch.float32,
+                        device=self.device,
+                    )
+                return p
+            frame = goal
+        else:
+            arr = np.asarray(goal)
+            if arr.ndim == 1 and arr.shape[0] == p_dim:
+                return torch.as_tensor(
+                    normalize_position(arr, size),
+                    dtype=torch.float32,
+                    device=self.device,
+                )
+            frame = goal
+
+        z = self.encode(frame)
+        return self.model.probe(z.float()).reshape(-1)
 
     def _push(self, z: torch.Tensor) -> torch.Tensor:
         """Добавляет латент в историю и возвращает окно (1,ctx,D)."""
@@ -153,6 +212,24 @@ class OpenJEPAEngine:
     @torch.no_grad()
     def encode(self, obs) -> torch.Tensor:
         return self.model.encode(self._to_tensor(obs))
+
+    @torch.no_grad()
+    def position(self, obs, denormalize: bool = False) -> torch.Tensor:
+        """Позиция объекта по наблюдению (через пробу).
+
+        Возвращает **нормированные** координаты в `[-1, 1]` — так проба
+        обучалась. `denormalize=True` переводит их в пиксели сцены.
+
+        Доступна только если модель обучена с `probe_weight > 0`.
+        """
+        if getattr(self.model, "probe", None) is None:
+            raise ValueError("у модели нет пробы: обучите с probe_weight > 0")
+        z = self.encode(obs)
+        p = self.model.probe(z.float()).squeeze(0)
+        if denormalize:
+            size = self.cfg.get("data", {}).get("env", {}).get("size", 64)
+            p = (p + 1.0) * 0.5 * float(size)
+        return p
 
     @torch.no_grad()
     def step(self, obs, goal=None) -> tuple[np.ndarray | None, float]:

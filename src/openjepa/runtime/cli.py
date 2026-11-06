@@ -19,6 +19,7 @@ import numpy as np
 import torch
 
 from ..data.synthetic import BallEnv, BallEnvConfig
+from ..planning.cem import CostMode
 from .engine import OpenJEPAEngine, RuntimeConfig, make_goal_frame
 
 
@@ -61,7 +62,10 @@ def cmd_eval(args: argparse.Namespace) -> None:
         goal_pos = rng.uniform(lo, hi, size=2)
         goal_frame = make_goal_frame(env, goal_pos)
         eng.reset()
-        eng.set_goal(goal_frame)
+        if eng.cost_mode == CostMode.PROBE:
+            eng.set_goal(goal_pos)
+        else:
+            eng.set_goal(goal_frame)
 
         for t in range(args.steps):
             action, s = eng.step(frame)
@@ -88,7 +92,10 @@ def cmd_demo(args: argparse.Namespace) -> None:
     goal_pos = np.array([env.cfg.size * 0.75, env.cfg.size * 0.3])
     goal_frame = make_goal_frame(env, goal_pos)
     eng.reset()
-    eng.set_goal(goal_frame)
+    if eng.cost_mode == CostMode.PROBE:
+        eng.set_goal(goal_pos)
+    else:
+        eng.set_goal(goal_frame)
 
     frames = [frame.copy()]
     t0 = time.time()

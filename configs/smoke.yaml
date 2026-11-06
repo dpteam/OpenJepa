@@ -11,6 +11,7 @@ data:
   env:
     size: 64
     radius: 5.0
+    blur: 2.0
 
 model:
   img_size: 64
@@ -19,7 +20,7 @@ model:
   dim: 96
   depth: 2
   heads: 3
-  proj_dim: 32
+  proj_dim: 8
   proj_hidden: 128
   action_dim: 2
   ctx: 2
@@ -28,6 +29,8 @@ model:
   pred_hidden: 128
   lamb: 0.05
   inv_weight: 0.5
+  metric_weight: 1.0
+  probe_weight: 1.0
   sigreg_slices: 64
   hierarchical: false
 
@@ -41,4 +44,5 @@ train:
   amp: true
   workers: 0
   save_every: 0
+  probe_steps: 60     # дообучение пробы на eval-латентах (см. train/pretrain.py)
   grad_clip: 0

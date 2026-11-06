@@ -77,6 +77,7 @@ def build_model(cfg: dict):
         heads=m["heads"],
         proj_dim=m["proj_dim"],
         proj_hidden=m.get("proj_hidden", 512),
+        proj_norm=m.get("proj_norm", "batch"),
         action_dim=m["action_dim"],
         ctx=m.get("ctx", 2),
         horizon=m.get("horizon", 1),
@@ -84,6 +85,10 @@ def build_model(cfg: dict):
         pred_hidden=m.get("pred_hidden", 384),
         lamb=m.get("lamb", 0.05),
         inv_weight=m.get("inv_weight", 0.5),
+        metric_weight=m.get("metric_weight", 1.0),
+        probe_weight=m.get("probe_weight", 1.0),
+        var_weight=m.get("var_weight", 1.0),
+        var_target=m.get("var_target", 1.0),
         stop_grad_target=m.get("stop_grad_target", False),
         sigreg_slices=m.get("sigreg_slices", 256),
     )
@@ -161,7 +166,7 @@ def train(cfg: dict, out_dir: str | Path | None = None) -> Path:
     writer = csv.writer(log_file)
     if new_log:
         writer.writerow(
-            ["step", "epoch", "loss", "pred", "inv", "sigreg", "val_pred", "val_std", "lr", "sec"]
+            ["step", "epoch", "loss", "pred", "inv", "metric", "probe", "sigreg", "val_pred", "val_std", "lr", "sec"]
         )
 
     best = float("inf")
@@ -170,19 +175,22 @@ def train(cfg: dict, out_dir: str | Path | None = None) -> Path:
 
     for epoch in range(tcfg["epochs"]):
         model.train()
-        run_loss = run_pred = run_reg = run_inv = 0.0
+        run_loss = run_pred = run_reg = run_inv = run_met = run_probe = 0.0
         n_batches = 0
 
         for batch in train_dl:
             frames = batch["frames"].to(device, non_blocking=True)
             actions = batch["actions"].to(device, non_blocking=True)
+            positions = batch.get("positions")
+            if positions is not None:
+                positions = positions.to(device, non_blocking=True)
 
             lr = cosine_warmup(step, total_steps, warmup, tcfg["lr"])
             for g in opt.param_groups:
                 g["lr"] = lr
 
             with torch.amp.autocast("cuda", enabled=use_amp, dtype=torch.bfloat16):
-                out_dict = model(frames, actions)
+                out_dict = model(frames, actions, positions)
                 loss = out_dict["loss"]
 
             opt.zero_grad(set_to_none=True)
@@ -196,6 +204,8 @@ def train(cfg: dict, out_dir: str | Path | None = None) -> Path:
             run_loss += float(loss.detach())
             run_pred += float(out_dict["pred_loss"])
             run_inv += float(out_dict.get("inv_loss", torch.zeros(())))
+            run_met += float(out_dict.get("metric_loss", torch.zeros(())))
+            run_probe += float(out_dict.get("probe_loss", torch.zeros(())))
             run_reg += float(out_dict["sigreg_loss"])
             n_batches += 1
             step += 1
@@ -203,6 +213,8 @@ def train(cfg: dict, out_dir: str | Path | None = None) -> Path:
         # Пересчитываем BN-статистики на текущих весах, иначе eval-метрика
         # меряет не то, что выучила модель (см. recalibrate_bn).
         recalibrate_bn(model, train_dl, device, max_batches=8)
+        # Проба должна видеть те латенты, которые будут при инференсе.
+        calibrate_probe(model, train_dl, device, steps=tcfg.get("probe_steps", 60))
         val_pred, val_std = evaluate(model, val_dl, device, use_amp)
         avg = run_loss / max(1, n_batches)
         writer.writerow(
@@ -212,6 +224,8 @@ def train(cfg: dict, out_dir: str | Path | None = None) -> Path:
                 f"{avg:.6f}",
                 f"{run_pred / max(1, n_batches):.6f}",
                 f"{run_inv / max(1, n_batches):.6f}",
+                f"{run_met / max(1, n_batches):.6f}",
+                f"{run_probe / max(1, n_batches):.6f}",
                 f"{run_reg / max(1, n_batches):.6f}",
                 f"{val_pred:.6f}",
                 f"{val_std:.6f}",
@@ -223,6 +237,8 @@ def train(cfg: dict, out_dir: str | Path | None = None) -> Path:
         print(
             f"epoch {epoch:3d} | loss {avg:.4f} | pred {run_pred / max(1, n_batches):.4f} "
             f"| inv {run_inv / max(1, n_batches):.4f} "
+            f"| met {run_met / max(1, n_batches):.4f} "
+            f"| probe {run_probe / max(1, n_batches):.4f} "
             f"| sigreg {run_reg / max(1, n_batches):.4f} | val_pred {val_pred:.4f} "
             f"| val_std {val_std:.3f} | {time.time() - t0:.0f}s"
         )
@@ -288,11 +304,63 @@ def recalibrate_bn(model, dl, device, max_batches: int = 8) -> None:
     for i, batch in enumerate(dl):
         if i >= max_batches:
             break
-        model(batch["frames"].to(device), batch["actions"].to(device))
+        model(batch["frames"].to(device), batch["actions"].to(device),
+              batch["positions"].to(device) if "positions" in batch else None)
 
     for m in bns:
         m.momentum = 0.1
     model.train(was_training)
+
+
+def calibrate_probe(model, dl, device, steps: int = 60, lr: float = 1e-3) -> float:
+    """Дообучает пробу `z -> p` на латентах в **eval-режиме**.
+
+    Зачем отдельный этап. Проектор использует `BatchNorm`, который в `train()`
+    нормирует по текущему батчу, а в `eval()` — по running-статистикам. Из-за
+    этого латент в двух режимах разный, и проба, обученная в `train()`,
+    в инференсе видит «другие» векторы: на нашем прогоне ошибка пробы была
+    50 px вместо 2.
+
+    Решение стандартное: энкодер замораживаем, проба учится на тех латентах,
+    которые она реально увидит при инференсе. Это ровно та же логика, что
+    «линейная проба на замороженных признаках» в LeJEPA/DINO.
+    """
+    probe = getattr(model, "probe", None)
+    if probe is None:
+        return float("nan")
+
+    was_training = model.training
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad_(False)
+    for p in probe.parameters():
+        p.requires_grad_(True)
+
+    opt = torch.optim.AdamW(probe.parameters(), lr=lr)
+    it = iter(dl)
+    last = float("nan")
+    for _ in range(steps):
+        try:
+            batch = next(it)
+        except StopIteration:
+            it = iter(dl)
+            batch = next(it)
+        positions = batch.get("positions")
+        if positions is None:
+            break
+        positions = positions.to(device)
+        with torch.no_grad():
+            z = model.encode_sequence(batch["frames"].to(device)).float()
+        loss = torch.nn.functional.smooth_l1_loss(probe(z), positions.float())
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+        last = float(loss.detach())
+
+    for p in model.parameters():
+        p.requires_grad_(True)
+    model.train(was_training)
+    return last
 
 
 @torch.no_grad()
@@ -310,8 +378,11 @@ def evaluate(model, dl, device, use_amp: bool) -> tuple[float, float]:
     for batch in dl:
         frames = batch["frames"].to(device)
         actions = batch["actions"].to(device)
+        positions = batch.get("positions")
+        if positions is not None:
+            positions = positions.to(device)
         with torch.amp.autocast("cuda", enabled=use_amp, dtype=torch.bfloat16):
-            out = model(frames, actions)
+            out = model(frames, actions, positions)
             z = model.encode_sequence(frames).float().reshape(-1, model.cfg.proj_dim)
         total += float(out["pred_loss"]) * frames.shape[0]
         n += frames.shape[0]

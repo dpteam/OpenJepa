@@ -15,6 +15,7 @@ data:
     restitution: 0.92
     accel_scale: 0.35
     max_speed: 4.0
+    blur: 2.0
 
 model:
   img_size: 64
@@ -23,7 +24,7 @@ model:
   dim: 192
   depth: 6
   heads: 3
-  proj_dim: 64
+  proj_dim: 8
   proj_hidden: 512
   action_dim: 2
   ctx: 2
@@ -32,6 +33,8 @@ model:
   pred_hidden: 256
   lamb: 0.05
   inv_weight: 0.5
+  metric_weight: 1.0
+  probe_weight: 1.0
   sigreg_slices: 256
   hierarchical: true
   levels: 3
@@ -47,4 +50,5 @@ train:
   amp: true
   workers: 0
   save_every: 10
+  probe_steps: 60     # дообучение пробы на eval-латентах (см. train/pretrain.py)
   grad_clip: 0

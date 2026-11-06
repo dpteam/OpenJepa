@@ -1,5 +1,5 @@
 # Обучение JEPA-модели мира на игрушечной среде с мячом.
-# 64x64, 6 слоёв, ~1.2M параметров — тренируется минуты на одной GPU.
+# 64x64, ViT-6 слоёв, ~7.6M параметров — тренируется минуты на одной GPU.
 seed: 0
 device: auto
 out_dir: runs/toy
@@ -15,6 +15,8 @@ data:
     restitution: 0.92
     accel_scale: 0.35
     max_speed: 4.0
+    blur: 2.0         # anti-aliasing: без него латент становится
+                      # высокочастотным кодом (см. docs/04, §4.2)
 
 model:
   img_size: 64
@@ -23,15 +25,19 @@ model:
   dim: 192
   depth: 6
   heads: 3
-  proj_dim: 64        # пространство, в котором живёт SIGReg и предиктор
+  proj_dim: 8         # ВАЖНО: маленькое D. SIGReg требует полнорангового
+                      # гауссиана; для данных на 2-мерном многообразии
+                      # большие D уходят в шум (см. docs/04, §4.2)
   proj_hidden: 512
   action_dim: 2
-  ctx: 2              # сколько последних латентов видит предиктор (скорость объекта)
+  ctx: 2              # сколько прошлых латентов видит предиктор (даёт скорость)
   horizon: 1
   pred_depth: 3
   pred_hidden: 384
   lamb: 0.05          # вес SIGReg; 0.02-0.1 работает стабильно
-  inv_weight: 0.5     # вес inverse-dynamics: держит в латенте управляемые факторы
+  inv_weight: 0.5     # inverse-dynamics: держит в латенте управляемые факторы
+  metric_weight: 1.0  # латентное расстояние должно быть пропорционально мировому
+  probe_weight: 1.0   # проба z -> позиция: стоимость планировщика в задаче
   sigreg_slices: 256
   stop_grad_target: false
   hierarchical: false
@@ -46,4 +52,5 @@ train:
   amp: true
   workers: 0
   save_every: 10
+  probe_steps: 60     # дообучение пробы на eval-латентах (см. train/pretrain.py)
   grad_clip: 0

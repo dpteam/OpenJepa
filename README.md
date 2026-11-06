@@ -19,10 +19,18 @@ Predictive Architecture) — подхода Янна ЛеКуна к модел�
 python -m pip install -e .          # или: pip install -r requirements.txt
 export PYTHONPATH=src               # Windows: $env:PYTHONPATH="src"
 
-python tests/run_all.py                              # 29 тестов, ~40 секунд
+python tests/run_all.py                              # 39 тестов, ~40 секунд
 python -m openjepa.runtime.cli train --config configs/pretrain_toy.yaml
 python -m openjepa.runtime.cli eval  --ckpt runs/toy/best.pt --episodes 20
-python -m openjepa.runtime.cli demo  --ckpt runs/toy/best.pt --out runs/demo.png
+python -m openjepa.runtime.cli demo  --ckpt runs/toy/best.pt --out runs/demo
+```
+
+Диагностика (секунды, а экономит часы):
+
+```bash
+python tools/probe_latent.py --ckpt runs/toy/best.pt   # кодирует ли латент управляемое
+python tools/bench.py --ckpt runs/toy/best.pt          # латентность
+python tools/verify.py                                 # всё сразу
 ```
 
 Что происходит: модель учится предсказывать эмбеддинг следующего кадра
@@ -48,6 +56,7 @@ src/openjepa/    реализация
 configs/         конфиги обучения
 tests/           тесты без внешних зависимостей
 tools/           утилиты: субтитры, бенчмарк, графики, проверка ссылок
+TASKS.md         шпаргалка по всем командам
 ```
 
 ---
@@ -69,11 +78,13 @@ tools/           утилиты: субтитры, бенчмарк, графи�
 | Компонент | Статус |
 |---|---|
 | ViT-энкодер (картинки/видео) | ✅ работает |
-| Латентный предиктор с условием на действие | ✅ работает |
+| Латентный предиктор с условием на действие и контекстом | ✅ работает |
 | SIGReg + LeJEPA-лосс | ✅ работает, проверен тестами |
+| Inverse-dynamics (сохраняет управляемые факторы) | ✅ работает |
+| Проба `z → позиция` (стоимость в задаче) | ✅ работает |
 | Обучение на видео-траекториях | ✅ работает |
 | Иерархический H-JEPA (3 уровня) | ✅ работает |
-| CEM-планирование в латенте | ✅ работает |
+| CEM-планирование в латенте / в пространстве пробы | ✅ работает |
 | MPC-контур (receding horizon) | ✅ работает |
 | Рантайм: CLI + HTTP | ✅ работает |
 | Долговременная память | 📋 спроектирована, не реализована |

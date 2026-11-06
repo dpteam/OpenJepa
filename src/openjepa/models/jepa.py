@@ -18,7 +18,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..losses.sigreg import SIGReg
+from ..losses.auxiliary import inverse_dynamics_loss, metric_loss, variance_floor
 from .predictor import InverseDynamics, LatentPredictor, context_windows
+from .probe import PositionProbe
 from .vit import Projector, ViTEncoder
 
 
@@ -44,6 +46,10 @@ class JEPAConfig:
     # потеря
     lamb: float = 0.05
     inv_weight: float = 0.5
+    metric_weight: float = 1.0
+    probe_weight: float = 1.0
+    var_weight: float = 1.0
+    var_target: float = 1.0
     stop_grad_target: bool = False
     sigreg_slices: int = 256
     # прочее
@@ -78,6 +84,10 @@ class JEPA(nn.Module):
         # не выбрасывал факторы, на которые влияет действие. См. docstring
         # InverseDynamics и docs/14-zhurnal-resheniy.md §8.
         self.inverse = InverseDynamics(cfg.proj_dim, cfg.action_dim, cfg.pred_hidden)
+        # Проба латент -> физические координаты. Нужна, чтобы планировщик мог
+        # считать стоимость в пространстве задачи, а не в латенте
+        # (см. research/notes/2026-11-06-goal-definition.md).
+        self.probe = PositionProbe(cfg.proj_dim, out_dim=2, hidden=128)
 
     # ------------------------------------------------------------------ #
     # inference helpers
@@ -128,8 +138,18 @@ class JEPA(nn.Module):
     # ------------------------------------------------------------------ #
     # training
     # ------------------------------------------------------------------ #
-    def forward(self, obs: torch.Tensor, actions: torch.Tensor) -> dict[str, torch.Tensor]:
-        """obs: (B,T,C,H,W), actions: (B,T-1,A)."""
+    def forward(
+        self,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        positions: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """obs: (B,T,C,H,W), actions: (B,T-1,A), positions: (B,T,2) опционально.
+
+        `positions` — привилегированная информация из симулятора. Она нужна
+        только для метрической регуляризации (см. ниже) и недоступна на
+        инференсе.
+        """
         if obs.ndim != 5:
             raise ValueError(f"obs должен быть (B,T,C,H,W), получено {tuple(obs.shape)}")
         b, t = obs.shape[:2]
@@ -164,23 +184,45 @@ class JEPA(nn.Module):
         # Inverse dynamics: восстанавливаем действие по паре соседних латентов.
         # Это заставляет энкодер сохранять управляемые факторы (см. класс
         # InverseDynamics). Без этого латент терял горизонтальную позицию.
-        ni = b * (t - 1)
-        inv_pred = self.inverse(
-            z[:, :-1].reshape(ni, -1), z[:, 1:].reshape(ni, -1)
-        )
-        inv_loss = F.smooth_l1_loss(inv_pred, actions.reshape(ni, -1))
+        inv_loss = inverse_dynamics_loss(self.inverse, z, actions)
 
         # SIGReg считаем в fp32: статистика — разность близких величин
         # (cos_mean - phi), в bf16 она теряет точность и «шумит».
         reg_loss = self.sigreg(z.float())
+
+        # Метрическая регуляризация: латентное расстояние должно быть
+        # пропорционально реальному, иначе планировщик оптимизирует шум.
+        # Форма безразмерная (коэффициент вариации), см. losses/auxiliary.py.
+        met_loss = metric_loss(z, positions) if positions is not None else z.new_zeros(())
+
+        # Проба: латент должен линейно (почти) содержать физические координаты.
+        # Это одновременно (а) даёт планировщику стоимость в пространстве
+        # задачи и (б) служит диагностикой: если проба не учится, латент
+        # не содержит нужной информации.
+        probe_loss = z.new_zeros(())
+        if positions is not None and self.cfg.probe_weight > 0:
+            p_hat = self.probe(z.float())
+            probe_loss = F.smooth_l1_loss(p_hat, positions.float())
+
+        # Защита от седловой точки SIGReg в нуле. Нужна, если проектор не
+        # использует BatchNorm (см. losses/auxiliary.py::variance_floor).
+        var_loss = variance_floor(z, self.cfg.var_target)
+
         total = (
-            (1.0 - self.cfg.lamb) * (pred_loss + self.cfg.inv_weight * inv_loss)
+            (1.0 - self.cfg.lamb)
+            * (pred_loss + self.cfg.inv_weight * inv_loss)
             + self.cfg.lamb * reg_loss
+            + self.cfg.metric_weight * met_loss
+            + self.cfg.probe_weight * probe_loss
+            + self.cfg.var_weight * var_loss
         )
         return {
             "loss": total,
             "pred_loss": pred_loss.detach(),
             "inv_loss": inv_loss.detach(),
+            "metric_loss": met_loss.detach(),
+            "probe_loss": probe_loss.detach(),
+            "var_loss": var_loss.detach(),
             "sigreg_loss": reg_loss.detach(),
         }
 

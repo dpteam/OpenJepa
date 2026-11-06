@@ -108,6 +108,44 @@ def test_hierarchy_forward():
         assert f"pred_loss_l{i}" in out
 
 
+def test_inverse_dynamics_head():
+    """Голова должна выдавать действие и обучаться на простых данных."""
+    from openjepa.models.predictor import InverseDynamics
+
+    head = InverseDynamics(dim=8, action_dim=2, hidden=32)
+    z_t = torch.randn(16, 8)
+    a = torch.randn(16, 2)
+    z_n = z_t + a @ torch.randn(2, 8)
+    out = head(z_t, z_n)
+    assert out.shape == (16, 2)
+
+    opt = torch.optim.Adam(head.parameters(), lr=1e-2)
+    losses = []
+    for _ in range(200):
+        pred = head(z_t, z_n)
+        loss = torch.nn.functional.mse_loss(pred, a)
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        losses.append(float(loss))
+    assert losses[-1] < losses[0] * 0.5, f"голова не учится: {losses[0]:.3f} → {losses[-1]:.3f}"
+
+
+def test_inv_loss_in_total():
+    """inv_loss присутствует в выходе и участвует в общей потере."""
+    m = JEPA(small_cfg())
+    obs = torch.randn(2, 5, 3, 32, 32)
+    act = torch.randn(2, 4, 2).clamp(-1, 1)
+    out = m(obs, act)
+    assert "inv_loss" in out
+    assert torch.isfinite(out["inv_loss"])
+    assert out["inv_loss"] > 0
+
+    m0 = JEPA(small_cfg(inv_weight=0.0))
+    out0 = m0(obs, act)
+    assert float(out0["loss"]) != float(out["loss"])
+
+
 def test_no_collapse_on_untrained_but_sigreg_present():
     """SIGReg должен быть положительным уже на случайных весах."""
     m = JEPA(small_cfg())

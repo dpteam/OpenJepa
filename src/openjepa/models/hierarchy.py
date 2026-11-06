@@ -24,6 +24,7 @@ import torch.nn as nn
 
 from .jepa import JEPA, JEPAConfig
 from .predictor import context_windows
+from ..losses.auxiliary import metric_loss
 
 
 @dataclass
@@ -73,7 +74,12 @@ class HJEPA(nn.Module):
     def predict(self, level: int, z: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         return self.predictors[level](z, action)
 
-    def forward(self, obs: torch.Tensor, actions: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(
+        self,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        positions: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
         """Суммарная потеря по всем уровням.
 
         obs: (B,T,C,H,W). Для уровня со stride s нужен горизонт s, поэтому
@@ -105,8 +111,24 @@ class HJEPA(nn.Module):
             raise ValueError("последовательность слишком короткая для иерархии")
         pred_loss = torch.stack(losses).mean()
         reg_loss = self.encoder.sigreg(z.float())
-        total = (1.0 - self.cfg.base.lamb) * pred_loss + self.cfg.base.lamb * reg_loss
+
+        # Та же метрическая регуляризация, что и в JEPA: без неё латент
+        # остаётся «высокочастотным кодом» и планировщик оптимизирует шум.
+        met_loss = (
+            metric_loss(z, positions)
+            if positions is not None
+            else z.new_zeros(())
+        )
+
+        total = (
+            (1.0 - self.cfg.base.lamb) * pred_loss
+            + self.cfg.base.lamb * reg_loss
+            + self.cfg.base.metric_weight * met_loss
+        )
         out.update(
-            loss=total, pred_loss=pred_loss.detach(), sigreg_loss=reg_loss.detach()
+            loss=total,
+            pred_loss=pred_loss.detach(),
+            metric_loss=met_loss.detach(),
+            sigreg_loss=reg_loss.detach(),
         )
         return out
