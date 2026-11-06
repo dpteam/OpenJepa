@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Артефакты обучения
+runs/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Данные и медиа
+data/
+*.mp4
+*.gif
+*.png
+!docs/assets/*.png
+
+# Инструменты
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ОС
+.DS_Store
+Thumbs.db
+desktop.ini

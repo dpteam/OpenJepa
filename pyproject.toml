@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openjepa"
+version = "0.1.0"
+description = "JEPA-based world model: perception, prediction, planning, runtime"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "torch>=2.1",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+demo = ["torchvision>=0.16", "pillow>=10"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+openjepa = "openjepa.runtime.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+openjepa = ["py.typed"]

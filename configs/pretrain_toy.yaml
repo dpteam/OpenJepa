@@ -1,0 +1,48 @@
+# Обучение JEPA-модели мира на игрушечной среде с мячом.
+# 64x64, 6 слоёв, ~1.2M параметров — тренируется минуты на одной GPU.
+seed: 0
+device: auto
+out_dir: runs/toy
+
+data:
+  n_traj: 4000        # сколько траекторий в "эпохе"
+  n_val: 128
+  length: 16          # действий на траекторию (кадров будет 17)
+  env:
+    size: 64
+    radius: 5.0
+    gravity: 0.12
+    restitution: 0.92
+    accel_scale: 0.35
+    max_speed: 4.0
+
+model:
+  img_size: 64
+  patch_size: 8
+  in_chans: 3
+  dim: 192
+  depth: 6
+  heads: 3
+  proj_dim: 64        # пространство, в котором живёт SIGReg и предиктор
+  proj_hidden: 512
+  action_dim: 2
+  ctx: 2              # сколько последних латентов видит предиктор (скорость объекта)
+  horizon: 1
+  pred_depth: 3
+  pred_hidden: 384
+  lamb: 0.05          # вес SIGReg; 0.02-0.1 работает стабильно
+  sigreg_slices: 256
+  stop_grad_target: false
+  hierarchical: false
+
+train:
+  epochs: 30
+  batch_size: 32
+  eval_batch_size: 32
+  lr: 3.0e-4
+  weight_decay: 0.05
+  warmup_ratio: 0.05
+  amp: true
+  workers: 0
+  save_every: 10
+  grad_clip: 0

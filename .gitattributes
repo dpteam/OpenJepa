@@ -1,0 +1,16 @@
+* text=auto eol=lf
+
+*.py   text eol=lf
+*.md   text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.svg  text eol=lf
+
+# Субтитры и транскрипты — как есть, без нормализации
+*.vtt  -text
+*.txt  text eol=lf
+
+# Бинарники
+*.pt   binary
+*.png  binary

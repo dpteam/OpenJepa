@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 720" width="1000" height="720" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#5ec8a0"/>
+    </marker>
+    <marker id="arrow2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#7aa2f7"/>
+    </marker>
+    <marker id="arrow3" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#e0af68"/>
+    </marker>
+  </defs>
+
+  <rect width="1000" height="720" fill="#0b0e13"/>
+
+  <text x="500" y="34" fill="#c8d0dc" font-size="19" font-weight="600" text-anchor="middle">OpenJEPA — архитектура</text>
+  <text x="500" y="56" fill="#6b7688" font-size="12" text-anchor="middle">зелёный — восприятие и предсказание · синий — планирование · жёлтый — язык</text>
+
+  <!-- external world -->
+  <rect x="40" y="80" width="920" height="46" rx="8" fill="#161b24" stroke="#2a3340"/>
+  <text x="500" y="109" fill="#8892a0" font-size="13" text-anchor="middle">ВНЕШНИЙ МИР · камера · микрофон · проприоцепция · текст · действия</text>
+
+  <!-- perception -->
+  <rect x="40" y="150" width="270" height="92" rx="8" fill="#13251f" stroke="#2e6b52"/>
+  <text x="175" y="175" fill="#5ec8a0" font-size="13" font-weight="600" text-anchor="middle">1. ВОСПРИЯТИЕ</text>
+  <text x="175" y="197" fill="#9fb3ab" font-size="11" text-anchor="middle">ViT-энкодер + проектор</text>
+  <text x="175" y="215" fill="#6b7688" font-size="10.5" text-anchor="middle">x → z ∈ R⁶⁴</text>
+  <text x="175" y="232" fill="#6b7688" font-size="10.5" text-anchor="middle">общий латент для всех модальностей</text>
+
+  <!-- world model -->
+  <rect x="350" y="150" width="300" height="130" rx="8" fill="#13251f" stroke="#2e6b52"/>
+  <text x="500" y="175" fill="#5ec8a0" font-size="13" font-weight="600" text-anchor="middle">2. МОДЕЛЬ МИРА (H-JEPA)</text>
+  <text x="500" y="199" fill="#9fb3ab" font-size="11" text-anchor="middle">Pred(z, a) → ẑ′  в латенте</text>
+  <rect x="368" y="210" width="264" height="20" rx="4" fill="#0d1a16" stroke="#24503f"/>
+  <text x="500" y="224" fill="#7fb8a0" font-size="10" text-anchor="middle">L2 · 10 с — стратегия</text>
+  <rect x="368" y="234" width="264" height="20" rx="4" fill="#0d1a16" stroke="#24503f"/>
+  <text x="500" y="248" fill="#7fb8a0" font-size="10" text-anchor="middle">L1 · 1 с — тактика</text>
+  <rect x="368" y="258" width="264" height="20" rx="4" fill="#0d1a16" stroke="#24503f"/>
+  <text x="500" y="272" fill="#7fb8a0" font-size="10" text-anchor="middle">L0 · 100 мс — рефлекс</text>
+
+  <!-- planner -->
+  <rect x="700" y="150" width="260" height="92" rx="8" fill="#131a2b" stroke="#2f4370"/>
+  <text x="830" y="175" fill="#7aa2f7" font-size="13" font-weight="600" text-anchor="middle">6. ПЛАНИРОВЩИК</text>
+  <text x="830" y="197" fill="#a8b6cc" font-size="11" text-anchor="middle">CEM + MPC (receding horizon)</text>
+  <text x="830" y="215" fill="#6b7688" font-size="10.5" text-anchor="middle">256 сэмплов × 3 итерации</text>
+  <text x="830" y="232" fill="#6b7688" font-size="10.5" text-anchor="middle">иерархия: сверху вниз</text>
+
+  <!-- memory -->
+  <rect x="40" y="290" width="270" height="100" rx="8" fill="#1a1622" stroke="#3d2f52"/>
+  <text x="175" y="315" fill="#b48ead" font-size="13" font-weight="600" text-anchor="middle">3. ПАМЯТЬ</text>
+  <text x="175" y="337" fill="#a8a0b8" font-size="11" text-anchor="middle">рабочая · эпизодическая · семантическая</text>
+  <text x="175" y="357" fill="#6b7688" font-size="10.5" text-anchor="middle">векторный индекс по смыслу</text>
+  <text x="175" y="374" fill="#6b7688" font-size="10.5" text-anchor="middle">запись при surprise &gt; τ</text>
+
+  <!-- goal / cost -->
+  <rect x="700" y="290" width="260" height="100" rx="8" fill="#131a2b" stroke="#2f4370"/>
+  <text x="830" y="315" fill="#7aa2f7" font-size="13" font-weight="600" text-anchor="middle">5. ЦЕЛЬ И СТОИМОСТЬ</text>
+  <text x="830" y="337" fill="#a8b6cc" font-size="11" text-anchor="middle">cost(z) = ‖z − z_goal‖²</text>
+  <text x="830" y="355" fill="#6b7688" font-size="10.5" text-anchor="middle">+ энергия + безопасность</text>
+  <text x="830" y="373" fill="#6b7688" font-size="10.5" text-anchor="middle">+ штраф за дребезг</text>
+
+  <!-- language -->
+  <rect x="40" y="430" width="270" height="92" rx="8" fill="#241f14" stroke="#5c4a24"/>
+  <text x="175" y="455" fill="#e0af68" font-size="13" font-weight="600" text-anchor="middle">8. ЯЗЫКОВОЙ МОСТ</text>
+  <text x="175" y="477" fill="#c4b48f" font-size="11" text-anchor="middle">текст → z_goal (Procrustes)</text>
+  <text x="175" y="495" fill="#6b7688" font-size="10.5" text-anchor="middle">один поворот R вместо адаптера</text>
+  <text x="175" y="512" fill="#6b7688" font-size="10.5" text-anchor="middle">LLM: декомпозиция и объяснение</text>
+
+  <!-- consolidation -->
+  <rect x="350" y="430" width="300" height="92" rx="8" fill="#1a1622" stroke="#3d2f52"/>
+  <text x="500" y="455" fill="#b48ead" font-size="13" font-weight="600" text-anchor="middle">4. КОНСОЛИДАЦИЯ</text>
+  <text x="500" y="477" fill="#a8a0b8" font-size="11" text-anchor="middle">эпизоды → веса («сон»)</text>
+  <text x="500" y="495" fill="#6b7688" font-size="10.5" text-anchor="middle">replay + LoRA против забывания</text>
+  <text x="500" y="512" fill="#6b7688" font-size="10.5" text-anchor="middle">приоритет по surprise и исходу</text>
+
+  <!-- execution -->
+  <rect x="700" y="430" width="260" height="92" rx="8" fill="#131a2b" stroke="#2f4370"/>
+  <text x="830" y="455" fill="#7aa2f7" font-size="13" font-weight="600" text-anchor="middle">7. ИСПОЛНЕНИЕ</text>
+  <text x="830" y="477" fill="#a8b6cc" font-size="11" text-anchor="middle">клиппинг · лимиты · сглаживание</text>
+  <text x="830" y="495" fill="#6b7688" font-size="10.5" text-anchor="middle">safety-фильтр вне модели</text>
+  <text x="830" y="512" fill="#6b7688" font-size="10.5" text-anchor="middle">аварийный стоп</text>
+
+  <!-- two loops -->
+  <rect x="40" y="560" width="920" height="128" rx="8" fill="#10141b" stroke="#2a3340"/>
+  <text x="60" y="584" fill="#8892a0" font-size="12" font-weight="600">ДВА КОНТУРА ПРИНЯТИЯ РЕШЕНИЙ</text>
+
+  <rect x="60" y="598" width="420" height="72" rx="6" fill="#13251f" stroke="#2e6b52"/>
+  <text x="270" y="620" fill="#5ec8a0" font-size="12" font-weight="600" text-anchor="middle">SYSTEM 1 · быстрый</text>
+  <text x="270" y="640" fill="#9fb3ab" font-size="10.5" text-anchor="middle">политика π(z, z_goal) → a</text>
+  <text x="270" y="658" fill="#6b7688" font-size="10" text-anchor="middle">2–10 мс · рефлекс</text>
+
+  <rect x="520" y="598" width="420" height="72" rx="6" fill="#131a2b" stroke="#2f4370"/>
+  <text x="730" y="620" fill="#7aa2f7" font-size="12" font-weight="600" text-anchor="middle">SYSTEM 2 · медленный</text>
+  <text x="730" y="640" fill="#a8b6cc" font-size="10.5" text-anchor="middle">CEM: argmin Σ cost(rollout(z, a))</text>
+  <text x="730" y="658" fill="#6b7688" font-size="10" text-anchor="middle">50–500 мс · обдумывание</text>
+
+  <text x="500" y="592" fill="#e0af68" font-size="10.5" text-anchor="middle">surprise &gt; τ</text>
+  <line x1="482" y1="612" x2="518" y2="612" stroke="#e0af68" stroke-width="1.5" marker-end="url(#arrow3)"/>
+
+  <!-- arrows -->
+  <line x1="310" y1="196" x2="346" y2="196" stroke="#5ec8a0" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="328" y="188" fill="#5ec8a0" font-size="9.5" text-anchor="middle">z</text>
+
+  <line x1="650" y1="196" x2="696" y2="196" stroke="#5ec8a0" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="673" y="188" fill="#5ec8a0" font-size="9.5" text-anchor="middle">Pred</text>
+
+  <line x1="830" y1="242" x2="830" y2="286" stroke="#7aa2f7" stroke-width="2" marker-end="url(#arrow2)"/>
+  <text x="866" y="268" fill="#7aa2f7" font-size="9.5" text-anchor="middle">cost</text>
+
+  <line x1="175" y1="242" x2="175" y2="286" stroke="#b48ead" stroke-width="2" marker-end="url(#arrow2)"/>
+  <text x="205" y="268" fill="#b48ead" font-size="9.5" text-anchor="middle">surprise</text>
+
+  <line x1="700" y1="455" x2="660" y2="500" stroke="#7aa2f7" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <text x="700" y="490" fill="#7aa2f7" font-size="9.5">план</text>
+
+  <line x1="310" y1="470" x2="346" y2="470" stroke="#e0af68" stroke-width="2" marker-end="url(#arrow3)"/>
+  <text x="328" y="462" fill="#e0af68" font-size="9.5" text-anchor="middle">z_goal</text>
+
+  <line x1="830" y1="390" x2="830" y2="426" stroke="#7aa2f7" stroke-width="2" marker-end="url(#arrow2)"/>
+
+  <line x1="830" y1="522" x2="830" y2="556" stroke="#7aa2f7" stroke-width="2" marker-end="url(#arrow2)"/>
+  <text x="868" y="545" fill="#7aa2f7" font-size="9.5" text-anchor="middle">a_t</text>
+</svg>

@@ -1,0 +1,6 @@
+torch>=2.1
+numpy>=1.24
+pyyaml>=6.0
+# опционально, для demo/save_image
+torchvision>=0.16
+pillow>=10

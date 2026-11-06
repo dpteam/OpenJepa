@@ -1,0 +1,49 @@
+# Иерархический JEPA: три уровня с шагами 1, 4, 16 кадров.
+# Требует последовательность длиной >= max(strides)+1 = 17 кадров.
+seed: 0
+device: auto
+out_dir: runs/hjepa
+
+data:
+  n_traj: 4000
+  n_val: 128
+  length: 24
+  env:
+    size: 64
+    radius: 5.0
+    gravity: 0.12
+    restitution: 0.92
+    accel_scale: 0.35
+    max_speed: 4.0
+
+model:
+  img_size: 64
+  patch_size: 8
+  in_chans: 3
+  dim: 192
+  depth: 6
+  heads: 3
+  proj_dim: 64
+  proj_hidden: 512
+  action_dim: 2
+  ctx: 2
+  horizon: 1
+  pred_depth: 2
+  pred_hidden: 256
+  lamb: 0.05
+  sigreg_slices: 256
+  hierarchical: true
+  levels: 3
+  strides: [1, 4, 16]
+
+train:
+  epochs: 30
+  batch_size: 24
+  eval_batch_size: 24
+  lr: 3.0e-4
+  weight_decay: 0.05
+  warmup_ratio: 0.05
+  amp: true
+  workers: 0
+  save_every: 10
+  grad_clip: 0

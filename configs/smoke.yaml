@@ -1,0 +1,43 @@
+# Быстрая проверка, что всё работает: 2 эпохи, маленькая модель.
+# python -m openjepa.runtime.cli train --config configs/smoke.yaml
+seed: 0
+device: auto
+out_dir: runs/smoke
+
+data:
+  n_traj: 128
+  n_val: 16
+  length: 8
+  env:
+    size: 64
+    radius: 5.0
+
+model:
+  img_size: 64
+  patch_size: 8
+  in_chans: 3
+  dim: 96
+  depth: 2
+  heads: 3
+  proj_dim: 32
+  proj_hidden: 128
+  action_dim: 2
+  ctx: 2
+  horizon: 1
+  pred_depth: 2
+  pred_hidden: 128
+  lamb: 0.05
+  sigreg_slices: 64
+  hierarchical: false
+
+train:
+  epochs: 2
+  batch_size: 16
+  eval_batch_size: 16
+  lr: 5.0e-4
+  weight_decay: 0.05
+  warmup_ratio: 0.1
+  amp: true
+  workers: 0
+  save_every: 0
+  grad_clip: 0

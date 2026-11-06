@@ -1,0 +1,44 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+
+      - name: Тесты
+        run: python tests/run_all.py
+
+      - name: Smoke-обучение (2 эпохи, CPU)
+        run: python -m openjepa.runtime.cli train --config configs/smoke.yaml --out runs/ci
+        env:
+          PYTHONPATH: src
+
+      - name: Проверка, что чекпоинт загружается
+        run: |
+          python -c "from openjepa.runtime import OpenJEPAEngine; OpenJEPAEngine.from_checkpoint('runs/ci/best.pt')"
+        env:
+          PYTHONPATH: src
