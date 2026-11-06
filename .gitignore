@@ -25,7 +25,7 @@ datasets/
 !docs/assets/*.png
 
 # Скачанные статьи и книги (бинарники, не для git)
-refs/
+refs/*
 !refs/README.md
 
 # Инструменты
