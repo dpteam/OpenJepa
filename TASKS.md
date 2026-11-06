@@ -26,6 +26,10 @@ python tools/bench.py --ckpt runs/toy/best.pt
 python tools/plot.py --run runs/toy
 python tools/report.py --run runs/toy
 python tools/demo.py --ckpt runs/toy/best.pt
+
+python tools/fetch_refs.py --from-bib research/bibliography.md
+python tools/zim_reader.py info "H:\pub_h\Mirrors\WikiS\Kiwix\ZIMs\wikipedia_ru_all_maxi_2025-06.zim"
+python tools/zim_reader.py check "H:\pub_h\Mirrors\WikiS\Kiwix\ZIMs\gutenberg_ru_all_2026-01.zim"
 ```
 
 ## Linux / macOS
@@ -39,12 +43,13 @@ export PYTHONPATH=src
 
 | Вопрос | Команда | Ожидание |
 |---|---|---|
-| Код не сломан? | `tests/run_all.py` | 32/32 |
+| Код не сломан? | `tests/run_all.py` | 46/46 |
 | Всё работает end-to-end? | `tools/verify.py` | «ВСЁ В ПОРЯДКЕ» |
-| Латент кодирует управляемые факторы? | `tools/probe_latent.py` | асимметрия < 3× |
+| Латент кодирует управляемые факторы? | `tools/probe_latent.py` | асимметрия < 3×, noise < 0.05 |
 | Сколько стоит шаг? | `tools/bench.py` | десятки мс |
 | Документация не битая? | `tools/check_docs.py` | «все ссылки валидны» |
 | Ссылки на статьи живые? | `tools/check_refs.py` | «все ссылки валидны» |
+| ZIM-архив целый? | `tools/zim_reader.py check <zim>` | «ПРОВЕРКА ПРОЙДЕНА» |
 
 ## Порядок при изменении модели
 

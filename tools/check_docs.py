@@ -43,6 +43,9 @@ def main() -> int:
                 path.parent / name,
                 ROOT / "src" / "openjepa" / name,   # ссылки вида `models/vit.py`
                 ROOT / "docs" / name,               # ссылки вида `05-obuchenie.md`
+                ROOT / "tools" / name,              # ссылки вида `probe_latent.py`
+                ROOT / "tests" / name,
+                ROOT / "configs" / name,
             ]
             if not any(c.exists() for c in candidates):
                 problems.append(f"{path.relative_to(ROOT)} -> `{name}` (нет файла)")

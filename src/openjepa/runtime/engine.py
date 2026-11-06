@@ -85,7 +85,9 @@ class OpenJEPAEngine:
         self.device = _pick_device(self.rt.device)
         self.model = model.to(self.device).eval()
         self.ctx = model_ctx(self.model)
-        probe = getattr(self.model, "probe", None)
+        # JEPA-часть: у HJEPA энкодер/проба лежат внутри `encoder`.
+        self.base = self.model.encoder if hasattr(self.model, "predictors") else self.model
+        probe = getattr(self.base, "z_probe", None)
         mode = CostMode(self.rt.cost_mode)
         if mode == CostMode.PROBE and probe is None:
             mode = CostMode.LATENT  # модель без пробы — откатываемся
@@ -196,8 +198,7 @@ class OpenJEPAEngine:
                 )
             frame = goal
 
-        z = self.encode(frame)
-        return self.model.probe(z.float()).reshape(-1)
+        return self.base.read_position(self._to_tensor(frame)).reshape(-1)
 
     def _push(self, z: torch.Tensor) -> torch.Tensor:
         """Добавляет латент в историю и возвращает окно (1,ctx,D)."""
@@ -215,7 +216,7 @@ class OpenJEPAEngine:
 
     @torch.no_grad()
     def position(self, obs, denormalize: bool = False) -> torch.Tensor:
-        """Позиция объекта по наблюдению (через пробу).
+        """Позиция объекта по наблюдению (spatial soft-argmax по токенам).
 
         Возвращает **нормированные** координаты в `[-1, 1]` — так проба
         обучалась. `denormalize=True` переводит их в пиксели сцены.
@@ -224,8 +225,7 @@ class OpenJEPAEngine:
         """
         if getattr(self.model, "probe", None) is None:
             raise ValueError("у модели нет пробы: обучите с probe_weight > 0")
-        z = self.encode(obs)
-        p = self.model.probe(z.float()).squeeze(0)
+        p = self.base.read_position(self._to_tensor(obs)).reshape(-1)
         if denormalize:
             size = self.cfg.get("data", {}).get("env", {}).get("size", 64)
             p = (p + 1.0) * 0.5 * float(size)

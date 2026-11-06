@@ -1,21 +1,29 @@
-"""Голова-проба: латент -> физические величины.
+"""Пространственная проба: сетка токенов -> координаты объекта.
 
-Зачем нужна. Планировщик может считать стоимость двумя способами:
+Зачем не обычный MLP на пуле. `ViTEncoder` усредняет токены патчей
+(`mean(dim=1)`), чтобы получить один вектор на кадр. Усреднение удобно для
+динамики, но **стирает информацию о том, где находится объект**: мяч слева
+и мяч справа дают похожие средние активации.
 
-1. **в латенте**: `‖z_t − z_goal‖²`. Требует, чтобы латент был метрикой
-   (см. `research/notes/2026-11-06-sigreg-vs-metric.md`), и чтобы цель
-   задавалась состоянием, а не кадром.
-2. **в физическом пространстве**: `‖p̂(z_t) − p_goal‖²`, где `p̂` — эта
-   проба.
+Замер на нашем чекпоинте: MLP-проба на пуле сходилась к ошибке **11 px** на
+сцене 64 px — это 17% и бесполезно для планирования.
 
-Второй способ честнее для игрушки: цель — это «мяч в точке X», а не «мяч в
-точке X с нулевой скоростью». Проба — это **readout** (линейное или почти
-линейное отображение), а не декодер картинки: мы по-прежнему не
-восстанавливаем пиксели.
+Решение — **spatial soft-argmax**, стандартный приём для чтения координат
+(используется в позе человека, трекинге точек, ключевых точках):
 
-Это тот же приём, что probing в LeJEPA: если информация в латенте есть, она
-линейно извлекается. Если проба не может предсказать позицию — латент её не
-содержит, и это диагноз, а не проблема пробы.
+1. каждый токен патча проецируется в один скаляр (логит «здесь объект»);
+2. softmax по всем патчам даёт распределение внимания;
+3. математическое ожидание координат сетки под этим распределением —
+   искомая точка.
+
+Преимущества:
+
+* координата получается **непрерывной** (взвешенное среднее), а не
+  квантованной по патчам;
+* суб-пиксельная точность достигается даже при `patch_size=8`;
+* нет декодера пикселей — это readout признаков, а не реконструкция;
+* градиент течёт и в пробу, и в энкодер, поэтому энкодер вынужден сохранять
+  пространственную информацию.
 """
 
 from __future__ import annotations
@@ -24,8 +32,98 @@ import torch
 import torch.nn as nn
 
 
+class SpatialProbe(nn.Module):
+    """Сетка токенов (..., N, D) -> координаты (..., out_dim) в [-1, 1].
+
+    Args:
+        dim: размерность токена.
+        grid: размер сетки патчей (`img_size // patch_size`).
+        out_dim: 2 для (x, y); можно 3 для (x, y, z).
+        hidden: ширина проекции токена в логит.
+        temperature: «резкость» softmax. Больше — острее.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        grid: int = 8,
+        out_dim: int = 2,
+        hidden: int = 64,
+        temperature: float = 1.0,
+    ) -> None:
+        super().__init__()
+        self.grid = grid
+        self.out_dim = out_dim
+        self.temperature = temperature
+
+        self.score = nn.Sequential(
+            nn.Linear(dim, hidden),
+            nn.GELU(approximate="tanh"),
+            nn.Linear(hidden, 1),
+        )
+
+        # Фиксированные координаты центров патчей в [-1, 1].
+        ys, xs = torch.meshgrid(
+            torch.linspace(-1.0, 1.0, grid),
+            torch.linspace(-1.0, 1.0, grid),
+            indexing="ij",
+        )
+        coords = torch.stack([xs.reshape(-1), ys.reshape(-1)], dim=-1)  # (N, 2)
+        if out_dim > 2:
+            coords = torch.cat([coords, torch.zeros(coords.shape[0], out_dim - 2)], dim=-1)
+        self.register_buffer("coords", coords, persistent=False)
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        """tokens: (..., N, D) -> (..., out_dim).
+
+        Мягкое внимание: если объект один, распределение почти одноточечное,
+        и ответ — его центр. Если объектов несколько, ответ — «центр масс»,
+        что для планирования часто и нужно.
+        """
+        if tokens.ndim < 3:
+            raise ValueError(f"ожидался (...,N,D), получено {tuple(tokens.shape)}")
+        n = tokens.shape[-2]
+        if n != self.coords.shape[0]:
+            raise ValueError(
+                f"число токенов {n} не совпадает с сеткой {self.coords.shape[0]}"
+            )
+        logits = self.score(tokens).squeeze(-1)  # (..., N)
+        attn = torch.softmax(logits / self.temperature, dim=-1)
+        return attn @ self.coords.to(tokens.dtype)  # (..., out_dim)
+
+    def attention(self, tokens: torch.Tensor) -> torch.Tensor:
+        """Распределение внимания по патчам — для визуализации и отладки."""
+        logits = self.score(tokens).squeeze(-1)
+        return torch.softmax(logits / self.temperature, dim=-1)
+
+
+class PositionSlice(nn.Module):
+    """Берёт последние `out_dim` компонент латента как координаты.
+
+    Используется, когда позиция **встроена в латент** (`position_in_latent`):
+    предиктор учится предсказывать её вместе с остальным, а планировщику
+    остаётся просто взять эти компоненты. Никакого обучения не нужно.
+
+    Почему так лучше MLP-пробы: mean-pooling в энкодере стирает позицию
+    (ошибка 11–14 px), и MLP не может вытащить то, чего нет. Если позиция
+    лежит в латенте явно, планировщик получает её с точностью пробега
+    предиктора, а не с точностью угадывания.
+    """
+
+    def __init__(self, out_dim: int = 2) -> None:
+        super().__init__()
+        self.out_dim = out_dim
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        return z[..., -self.out_dim :]
+
+
 class PositionProbe(nn.Module):
-    """z -> p̂. Маленький MLP: сложнее линейного, но не декодер."""
+    """Старая проба на пуле: z -> p. Оставлена для сравнения.
+
+    На практике упирается в ~11 px, потому что mean-pooling стирает
+    пространственную информацию. Используйте `SpatialProbe`.
+    """
 
     def __init__(self, dim: int, out_dim: int = 2, hidden: int = 128, depth: int = 2):
         super().__init__()
@@ -34,10 +132,6 @@ class PositionProbe(nn.Module):
             layers += [nn.Linear(hidden, hidden), nn.GELU(approximate="tanh")]
         layers.append(nn.Linear(hidden, out_dim))
         self.net = nn.Sequential(*layers)
-        # Нулевая инициализация выхода: на старте проба предсказывает 0,
-        # и её потеря ~O(1) (позиции нормированы в [-1,1]). Иначе случайный
-        # линейный слой на латенте с нормой ~5 даёт потерю ~20 и доминирует
-        # над остальными членами.
         nn.init.zeros_(layers[-1].weight)
         nn.init.zeros_(layers[-1].bias)
 

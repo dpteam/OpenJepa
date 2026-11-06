@@ -1,4 +1,5 @@
 from .pretrain import (
+    base_jepa,
     build_model,
     calibrate_probe,
     count_params,
@@ -16,4 +17,5 @@ __all__ = [
     "build_model",
     "count_params",
     "load_config",
+    "base_jepa",
 ]

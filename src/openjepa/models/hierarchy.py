@@ -54,7 +54,7 @@ class HJEPA(nn.Module):
         self.predictors = nn.ModuleList(
             [
                 type(self.encoder.predictor)(
-                    dim=base.proj_dim,
+                    dim=self.encoder.latent_dim,
                     action_dim=base.action_dim,
                     hidden=base.pred_hidden,
                     depth=base.pred_depth,

@@ -110,18 +110,30 @@ class ViTEncoder(nn.Module):
         )
         self.norm = nn.LayerNorm(dim, eps=1e-6)
         self.dim = dim
+        self.grid = self.patch_embed.grid
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward_tokens(self, x: torch.Tensor) -> tuple[torch.Tensor, bool]:
+        """Возвращает (B,T,N,D) токены патчей и флаг «вход был без T».
+
+        Токены нужны пространственной пробе (`SpatialProbe`): усреднение по
+        патчам стирает информацию о том, **где** находится объект, поэтому
+        позицию надо читать из сетки токенов, а не из пула.
+        """
         squeeze = x.ndim == 4
         if squeeze:
             x = x.unsqueeze(1)
         if x.ndim != 5:
             raise ValueError(f"ожидался (B,C,H,W) или (B,T,C,H,W), получено {x.shape}")
         b, t, c, h, w = x.shape
-        z = self.patch_embed(x.reshape(b * t, c, h, w))
+        tok = self.patch_embed(x.reshape(b * t, c, h, w))
         for blk in self.blocks:
-            z = blk(z)
-        z = self.norm(z).mean(dim=1).reshape(b, t, -1)
+            tok = blk(tok)
+        tok = self.norm(tok).reshape(b, t, tok.shape[1], -1)
+        return tok, squeeze
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        tok, squeeze = self.forward_tokens(x)
+        z = tok.mean(dim=2)
         return z.squeeze(1) if squeeze else z
 
 

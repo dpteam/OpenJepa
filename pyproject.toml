@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 demo = ["torchvision>=0.16", "pillow>=10"]
+zim = ["zstandard>=0.22"]
 dev = ["pytest>=7"]
 
 [project.scripts]

@@ -32,6 +32,55 @@ def _save_strip(frames: list[np.ndarray], path: Path, n: int = 8) -> None:
     save_image(torch.stack(imgs), path, nrow=n)
 
 
+def cmd_calibrate(args: argparse.Namespace) -> None:
+    """Пересчитывает BN-статистики и дообучает пробу на готовом чекпоинте.
+
+    Зачем: проба и BN-статистики — это «калибровка» поверх обученного
+    энкодера. Их можно и нужно пересчитывать отдельно, не переобучая модель
+    (30 эпох против 30 секунд).
+
+        python -m openjepa.runtime.cli calibrate --ckpt runs/toy/best.pt
+    """
+    import torch
+    from torch.utils.data import DataLoader
+
+    from ..data.synthetic import BallEnvConfig, TrajectoryDataset, collate
+    from ..train.pretrain import build_model, calibrate_probe, pick_device, recalibrate_bn
+
+    ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+    cfg = ckpt["config"]
+    model, _ = build_model(cfg)
+    model.load_state_dict(ckpt["model"])
+
+    device = pick_device(cfg.get("device", "auto"))
+    model = model.to(device)
+
+    d = cfg["data"]
+    env_cfg = BallEnvConfig(**d.get("env", {}))
+    ds = TrajectoryDataset(
+        n_traj=d.get("n_traj", 4000), length=d["length"], cfg=env_cfg,
+        seed=int(cfg.get("seed", 0)),
+    )
+    dl = DataLoader(
+        ds, batch_size=cfg["train"]["batch_size"], shuffle=True,
+        num_workers=0, collate_fn=collate, drop_last=True,
+    )
+
+    print(f"калибрую {args.ckpt} на {device}")
+    recalibrate_bn(model, dl, device, max_batches=args.bn_batches)
+    loss = calibrate_probe(
+        model, dl, device, steps=args.steps, lr=args.lr,
+        max_batches=args.batches, verbose=True,
+    )
+    print(f"probe loss: {loss:.5f}")
+
+    out = Path(args.out) if args.out else Path(args.ckpt).with_name("calibrated.pt")
+    ckpt["model"] = model.state_dict()
+    ckpt["probe_loss"] = loss
+    torch.save(ckpt, out)
+    print(f"сохранено: {out}")
+
+
 def cmd_train(args: argparse.Namespace) -> None:
     from ..train.pretrain import load_config, train
 
@@ -187,6 +236,15 @@ def main() -> None:
     p.add_argument("--out", default=None)
     p.add_argument("--epochs", type=int, default=None)
     p.set_defaults(fn=cmd_train)
+
+    p = sub.add_parser("calibrate")
+    p.add_argument("--ckpt", required=True)
+    p.add_argument("--out", default=None)
+    p.add_argument("--steps", type=int, default=400)
+    p.add_argument("--lr", type=float, default=3e-3)
+    p.add_argument("--batches", type=int, default=16, help="сколько батчей кэшировать")
+    p.add_argument("--bn-batches", type=int, default=8)
+    p.set_defaults(fn=cmd_calibrate)
 
     p = sub.add_parser("eval")
     p.add_argument("--ckpt", required=True)

@@ -38,8 +38,9 @@ def test_encoder_shapes():
     vid = torch.randn(3, 5, 3, 32, 32)
     assert m.encoder(img).shape == (3, 64)
     assert m.encoder(vid).shape == (3, 5, 64)
-    assert m.encode(img).shape == (3, 16)
-    assert m.encode_sequence(vid).shape == (3, 5, 16)
+    d = m.latent_dim
+    assert m.encode(img).shape == (3, d)
+    assert m.encode_sequence(vid).shape == (3, 5, d)
 
 
 def test_loss_is_finite_and_differentiable():
@@ -55,10 +56,10 @@ def test_loss_is_finite_and_differentiable():
 
 def test_rollout_shapes():
     m = JEPA(small_cfg())
-    z0 = torch.randn(2, 16)
+    z0 = torch.randn(2, m.latent_dim)
     acts = torch.randn(2, 4, 2).clamp(-1, 1)
     traj = m.rollout(z0, acts)
-    assert traj.shape == (2, 5, 16)
+    assert traj.shape == (2, 5, m.latent_dim)
     assert torch.allclose(traj[:, 0], z0)
 
 
@@ -68,9 +69,9 @@ def test_multistep_horizon():
     act = torch.randn(2, 5, 2).clamp(-1, 1)
     out = m(obs, act)
     assert torch.isfinite(out["loss"])
-    z = torch.randn(2, 16)
+    z = torch.randn(2, m.latent_dim)
     pred = m.predict_next(z, torch.randn(2, 3, 2))
-    assert pred.shape == (2, 3, 16)
+    assert pred.shape == (2, 3, m.latent_dim)
 
 
 def test_context_windows():
@@ -88,10 +89,10 @@ def test_context_windows():
 def test_rollout_keeps_context():
     """После rollout история должна сдвигаться, а не сбрасываться."""
     m = JEPA(small_cfg())
-    z = torch.randn(2, 2, 16)          # контекст из 2 латентов
+    z = torch.randn(2, 2, m.latent_dim)          # контекст из 2 латентов
     acts = torch.randn(2, 3, 2).clamp(-1, 1)
     traj = m.rollout(z, acts)
-    assert traj.shape == (2, 4, 16)
+    assert traj.shape == (2, 4, m.latent_dim)
     assert torch.allclose(traj[:, 0], z[:, -1])
 
 

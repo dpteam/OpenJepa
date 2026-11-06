@@ -4,3 +4,5 @@ pyyaml>=6.0
 # опционально, для demo/save_image
 torchvision>=0.16
 pillow>=10
+# ZIM-архивы (Wikipedia offline): нужен для кластеров со сжатием Zstd
+zstandard>=0.22

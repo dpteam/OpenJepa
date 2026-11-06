@@ -147,7 +147,9 @@ class CEMPlanner:
         """Размерность цели в режиме probe (число физических координат)."""
         if self.probe is None:
             raise ValueError("проба не задана")
-        # находим последний Linear в пробе
+        # PositionSlice: размерность задана явно
+        if hasattr(self.probe, "out_dim"):
+            return int(self.probe.out_dim)
         for m in reversed(list(self.probe.modules())):
             if isinstance(m, torch.nn.Linear):
                 return int(m.out_features)

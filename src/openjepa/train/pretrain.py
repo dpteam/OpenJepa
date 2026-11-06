@@ -89,6 +89,7 @@ def build_model(cfg: dict):
         probe_weight=m.get("probe_weight", 1.0),
         var_weight=m.get("var_weight", 1.0),
         var_target=m.get("var_target", 1.0),
+        position_in_latent=m.get("position_in_latent", True),
         stop_grad_target=m.get("stop_grad_target", False),
         sigreg_slices=m.get("sigreg_slices", 256),
     )
@@ -213,8 +214,15 @@ def train(cfg: dict, out_dir: str | Path | None = None) -> Path:
         # Пересчитываем BN-статистики на текущих весах, иначе eval-метрика
         # меряет не то, что выучила модель (см. recalibrate_bn).
         recalibrate_bn(model, train_dl, device, max_batches=8)
-        # Проба должна видеть те латенты, которые будут при инференсе.
-        calibrate_probe(model, train_dl, device, steps=tcfg.get("probe_steps", 60))
+        # Проба должна видеть те латенты, которые будут при инференсе,
+        # и сойтись: недотренированная проба даёт ошибку 25 px вместо 0.4.
+        calibrate_probe(
+            model,
+            train_dl,
+            device,
+            steps=tcfg.get("probe_steps", 400),
+            lr=tcfg.get("probe_lr", 3e-3),
+        )
         val_pred, val_std = evaluate(model, val_dl, device, use_amp)
         avg = run_loss / max(1, n_batches)
         writer.writerow(
@@ -312,54 +320,149 @@ def recalibrate_bn(model, dl, device, max_batches: int = 8) -> None:
     model.train(was_training)
 
 
-def calibrate_probe(model, dl, device, steps: int = 60, lr: float = 1e-3) -> float:
-    """Дообучает пробу `z -> p` на латентах в **eval-режиме**.
+def base_jepa(model):
+    """Возвращает JEPA-часть модели.
+
+    `JEPA` — сама себе база; `HJEPA` хранит общий энкодер как `JEPA` в поле
+    `encoder`. Такой хелпер нужен, чтобы калибровка и оценка работали для
+    обеих моделей.
+    """
+    return getattr(model, "encoder", model) if hasattr(model, "predictors") else model
+
+
+@torch.no_grad()
+def _cache_features(
+    model, dl, device, max_batches: int = 4
+) -> dict[str, torch.Tensor] | None:
+    """Считает латенты и токены в eval-режиме, складывает в кэш.
+
+    Зачем кэш. Пробы — маленькие головы, им нужно много шагов, чтобы сойтись
+    (60 шагов давали 25 px, 400 — доли пикселя). Считать энкодер на каждом
+    шаге было бы дорого; признаки считаются один раз.
+
+    Токены хранятся в fp16: 4 батча × 32 траектории × 17 кадров × 64 патча ×
+    192 = ~27M значений, в fp32 это 107 МБ, в fp16 — вдвое меньше.
+    """
+    model.eval()
+    base = base_jepa(model)
+    zs, toks, ps = [], [], []
+    for i, batch in enumerate(dl):
+        if i >= max_batches:
+            break
+        positions = batch.get("positions")
+        if positions is None:
+            return None
+        tok, _ = base.encoder.forward_tokens(batch["frames"].to(device))
+        pooled = base.projector(tok.mean(dim=2)).float()
+        if base.cfg.position_in_latent:
+            zfull = torch.cat([pooled, base.probe(tok.float())], dim=-1)
+        else:
+            zfull = pooled
+        zs.append(zfull.reshape(-1, base.latent_dim))
+        toks.append(tok.half().reshape(-1, tok.shape[-2], tok.shape[-1]))
+        ps.append(positions.to(device).float().reshape(-1, positions.shape[-1]))
+    if not zs:
+        return None
+    return {
+        "z": torch.cat(zs, dim=0),
+        "tok": torch.cat(toks, dim=0),
+        "p": torch.cat(ps, dim=0),
+    }
+
+
+def calibrate_probe(
+    model,
+    dl,
+    device,
+    steps: int = 400,
+    lr: float = 3e-3,
+    max_batches: int = 4,
+    verbose: bool = False,
+) -> float:
+    """Дообучает обе пробы (`z -> p` и `tokens -> p`) на eval-признаках.
 
     Зачем отдельный этап. Проектор использует `BatchNorm`, который в `train()`
     нормирует по текущему батчу, а в `eval()` — по running-статистикам. Из-за
     этого латент в двух режимах разный, и проба, обученная в `train()`,
-    в инференсе видит «другие» векторы: на нашем прогоне ошибка пробы была
-    50 px вместо 2.
+    в инференсе видит «другие» векторы.
 
-    Решение стандартное: энкодер замораживаем, проба учится на тех латентах,
-    которые она реально увидит при инференсе. Это ровно та же логика, что
-    «линейная проба на замороженных признаках» в LeJEPA/DINO.
+    Второй момент: **пробы склонны к недотренированности**. На нашем
+    чекпоинте 60 шагов давали ошибку 25 px, 400 шагов — доли пикселя.
+    Поэтому по умолчанию 400 шагов и lr 3e-3.
+
+    Решение стандартное: энкодер замораживаем, головы учатся на тех
+    признаках, которые они реально увидят при инференсе. Это та же логика,
+    что «линейная проба на замороженных признаках» в LeJEPA/DINO.
     """
-    probe = getattr(model, "probe", None)
-    if probe is None:
+    spatial = getattr(model, "probe", None)
+    latent = getattr(model, "z_probe", None)
+    if spatial is None or latent is None:
+        base = base_jepa(model)
+        spatial = spatial if spatial is not None else getattr(base, "probe", None)
+        latent = latent if latent is not None else getattr(base, "z_probe", None)
+    if spatial is None and latent is None:
+        return float("nan")
+
+    cache = _cache_features(model, dl, device, max_batches)
+    if cache is None:
+        return float("nan")
+    z_all, tok_all, p_all = cache["z"], cache["tok"], cache["p"]
+    n = z_all.shape[0]
+    if n < 2:
         return float("nan")
 
     was_training = model.training
     model.eval()
     for p in model.parameters():
         p.requires_grad_(False)
-    for p in probe.parameters():
-        p.requires_grad_(True)
 
-    opt = torch.optim.AdamW(probe.parameters(), lr=lr)
-    it = iter(dl)
+    heads = [h for h in (spatial, latent) if h is not None and len(list(h.parameters())) > 0]
+    for h in heads:
+        for p in h.parameters():
+            p.requires_grad_(True)
+
+    # Сброс голов: веса с прошлого этапа могут держать в локальном минимуме.
+    for h in heads:
+        for m in h.modules():
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.kaiming_uniform_(m.weight, a=5 ** 0.5)
+                if m.bias is not None:
+                    torch.nn.init.zeros_(m.bias)
+        lin = [m for m in h.modules() if isinstance(m, torch.nn.Linear)]
+        if lin:
+            torch.nn.init.zeros_(lin[-1].weight)
+            torch.nn.init.zeros_(lin[-1].bias)
+
+    params = [p for h in heads for p in h.parameters()]
+    opt = torch.optim.AdamW(params, lr=lr, weight_decay=1e-4)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+        opt, T_max=max(1, steps), eta_min=lr * 0.02
+    )
+    bs = min(512, n)
     last = float("nan")
     for _ in range(steps):
-        try:
-            batch = next(it)
-        except StopIteration:
-            it = iter(dl)
-            batch = next(it)
-        positions = batch.get("positions")
-        if positions is None:
-            break
-        positions = positions.to(device)
-        with torch.no_grad():
-            z = model.encode_sequence(batch["frames"].to(device)).float()
-        loss = torch.nn.functional.smooth_l1_loss(probe(z), positions.float())
+        idx = torch.randint(0, n, (bs,), device=z_all.device)
+        target = p_all[idx]
+        loss = z_all.new_zeros(())
+        if spatial is not None:
+            loss = loss + torch.nn.functional.smooth_l1_loss(
+                spatial(tok_all[idx].float()), target
+            )
+        if latent is not None:
+            loss = loss + torch.nn.functional.smooth_l1_loss(
+                latent(z_all[idx]), target
+            )
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
+        sched.step()
         last = float(loss.detach())
 
     for p in model.parameters():
         p.requires_grad_(True)
     model.train(was_training)
+    if verbose:
+        print(f"    probe: loss={last:.5f} ({steps} шагов на {n} кадрах)")
     return last
 
 
@@ -383,7 +486,8 @@ def evaluate(model, dl, device, use_amp: bool) -> tuple[float, float]:
             positions = positions.to(device)
         with torch.amp.autocast("cuda", enabled=use_amp, dtype=torch.bfloat16):
             out = model(frames, actions, positions)
-            z = model.encode_sequence(frames).float().reshape(-1, model.cfg.proj_dim)
+            base = base_jepa(model)
+            z = base.encode_sequence(frames).float().reshape(-1, base.latent_dim)
         total += float(out["pred_loss"]) * frames.shape[0]
         n += frames.shape[0]
         min_std = min(min_std, float(z.std(dim=0).min()))

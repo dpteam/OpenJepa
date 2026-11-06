@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from ..losses.sigreg import SIGReg
 from ..losses.auxiliary import inverse_dynamics_loss, metric_loss, variance_floor
 from .predictor import InverseDynamics, LatentPredictor, context_windows
-from .probe import PositionProbe
+from .probe import PositionProbe, PositionSlice, SpatialProbe
 from .vit import Projector, ViTEncoder
 
 
@@ -50,6 +50,7 @@ class JEPAConfig:
     probe_weight: float = 1.0
     var_weight: float = 1.0
     var_target: float = 1.0
+    position_in_latent: bool = True
     stop_grad_target: bool = False
     sigreg_slices: int = 256
     # прочее
@@ -72,7 +73,7 @@ class JEPA(nn.Module):
             cfg.dim, cfg.proj_hidden, cfg.proj_dim, norm=cfg.proj_norm
         )
         self.predictor = LatentPredictor(
-            dim=cfg.proj_dim,
+            dim=self.latent_dim,
             action_dim=cfg.action_dim,
             hidden=cfg.pred_hidden,
             depth=cfg.pred_depth,
@@ -83,22 +84,58 @@ class JEPA(nn.Module):
         # Вспомогательная голова: (z_t, z_{t+1}) -> a_t. Нужна, чтобы латент
         # не выбрасывал факторы, на которые влияет действие. См. docstring
         # InverseDynamics и docs/14-zhurnal-resheniy.md §8.
-        self.inverse = InverseDynamics(cfg.proj_dim, cfg.action_dim, cfg.pred_hidden)
-        # Проба латент -> физические координаты. Нужна, чтобы планировщик мог
-        # считать стоимость в пространстве задачи, а не в латенте
-        # (см. research/notes/2026-11-06-goal-definition.md).
-        self.probe = PositionProbe(cfg.proj_dim, out_dim=2, hidden=128)
+        self.inverse = InverseDynamics(self.latent_dim, cfg.action_dim, cfg.pred_hidden)
+        # Проба читает координаты из СЕТКИ ТОКЕНОВ (spatial soft-argmax):
+        # усреднение по патчам стирает позицию. См. models/probe.py.
+        self.probe = SpatialProbe(
+            cfg.dim, grid=cfg.img_size // cfg.patch_size, out_dim=2
+        )
+        # Как планировщик читает позицию из латента:
+        #  * позиция встроена в латент -> просто срез последних 2 компонент;
+        #  * иначе -> обучаемая голова (менее точно: пул теряет позицию).
+        self.z_probe = (
+            PositionSlice(2) if cfg.position_in_latent
+            else PositionProbe(cfg.proj_dim, out_dim=2, hidden=128)
+        )
+
+    @property
+    def latent_dim(self) -> int:
+        """Размерность пространства, в котором работает предиктор."""
+        return self.cfg.proj_dim + (2 if self.cfg.position_in_latent else 0)
 
     # ------------------------------------------------------------------ #
     # inference helpers
     # ------------------------------------------------------------------ #
+    def _encode_full(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Возвращает (латент предсказания, пул признаков) для входа энкодера."""
+        tok, squeeze = self.encoder.forward_tokens(obs)   # (B,T,N,D)
+        pooled = self.projector(tok.mean(dim=2))          # (B,T,Dp)
+        if self.cfg.position_in_latent:
+            p_hat = self.probe(tok.float())               # (B,T,2)
+            full = torch.cat([pooled, p_hat], dim=-1)
+        else:
+            full = pooled
+        if squeeze:
+            return full.squeeze(1), pooled.squeeze(1)
+        return full, pooled
+
     def encode(self, obs: torch.Tensor) -> torch.Tensor:
-        """(B,C,H,W) -> (B,Dp) в пространстве предсказания."""
-        return self.projector(self.encoder(obs))
+        """(B,C,H,W) -> (B, D) в пространстве предсказания."""
+        return self._encode_full(obs)[0]
 
     def encode_sequence(self, obs: torch.Tensor) -> torch.Tensor:
-        """(B,T,C,H,W) -> (B,T,Dp)."""
-        return self.projector(self.encoder(obs))
+        """(B,T,C,H,W) -> (B,T,D)."""
+        return self._encode_full(obs)[0]
+
+    @torch.no_grad()
+    def read_position(self, obs: torch.Tensor) -> torch.Tensor:
+        """Координаты объекта по наблюдению, в `[-1, 1]`.
+
+        Читаются из сетки токенов через spatial soft-argmax: mean-pooling
+        стирает позицию. См. `models/probe.py`.
+        """
+        tok, _ = self.encoder.forward_tokens(obs)
+        return self.probe(tok.float())
 
     def predict_next(self, z: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         """z: (B,Dp) или (B,ctx,Dp)."""
@@ -156,12 +193,21 @@ class JEPA(nn.Module):
         if t < 2:
             raise ValueError("нужно хотя бы 2 кадра")
 
-        z = self.encode_sequence(obs)  # (B,T,Dp)
+        tok, _ = self.encoder.forward_tokens(obs)      # (B,T,N,D)
+        pooled = self.projector(tok.mean(dim=2))       # (B,T,Dp)
+        if self.cfg.position_in_latent:
+            # Позиция — часть латента. Тогда предиктор предсказывает её
+            # вместе с остальным, и планировщик читает её напрямую.
+            p_hat = self.probe(tok.float())            # (B,T,2)
+            z = torch.cat([pooled, p_hat], dim=-1)
+        else:
+            p_hat = None
+            z = pooled
         ctx = self.cfg.ctx
         if t < ctx + 1:
             raise ValueError(f"нужно >= {ctx + 1} кадров при ctx={ctx}")
 
-        # Окна: (B,T,ctx,Dp). Окно t заканчивается на z_t.
+        # Окна: (B,T,ctx,D). Окно t заканчивается на z_t.
         windows = context_windows(z, ctx)
 
         if self.cfg.horizon > 1:
@@ -172,7 +218,7 @@ class JEPA(nn.Module):
             pred = self.predictor(windows[:, 0], actions[:, :k])
             target = z[:, 1 : k + 1]
         else:
-            src = windows[:, :-1]  # (B,T-1,ctx,Dp)
+            src = windows[:, :-1]  # (B,T-1,ctx,D)
             nb = b * (t - 1)
             pred = self.predictor(src.reshape(nb, ctx, -1), actions.reshape(nb, -1))
             target = z[:, 1:].reshape(nb, -1)
@@ -186,27 +232,33 @@ class JEPA(nn.Module):
         # InverseDynamics). Без этого латент терял горизонтальную позицию.
         inv_loss = inverse_dynamics_loss(self.inverse, z, actions)
 
-        # SIGReg считаем в fp32: статистика — разность близких величин
-        # (cos_mean - phi), в bf16 она теряет точность и «шумит».
-        reg_loss = self.sigreg(z.float())
+        # SIGReg — только на пуле признаков. Позиция в латенте имеет
+        # собственную структуру (ограничена квадратом [-1,1]²), и требовать
+        # от неё изотропного гауссиана бессмысленно: это конфликтовало бы с
+        # самим смыслом этих компонент.
+        reg_loss = self.sigreg(pooled.float())
 
         # Метрическая регуляризация: латентное расстояние должно быть
         # пропорционально реальному, иначе планировщик оптимизирует шум.
-        # Форма безразмерная (коэффициент вариации), см. losses/auxiliary.py.
-        met_loss = metric_loss(z, positions) if positions is not None else z.new_zeros(())
+        # Считаем на пуле — там геометрия и должна быть осмысленной.
+        met_loss = (
+            metric_loss(pooled, positions) if positions is not None else z.new_zeros(())
+        )
 
-        # Проба: латент должен линейно (почти) содержать физические координаты.
-        # Это одновременно (а) даёт планировщику стоимость в пространстве
-        # задачи и (б) служит диагностикой: если проба не учится, латент
-        # не содержит нужной информации.
+        # Проба: точность чтения координат из токенов и из латента.
         probe_loss = z.new_zeros(())
         if positions is not None and self.cfg.probe_weight > 0:
-            p_hat = self.probe(z.float())
-            probe_loss = F.smooth_l1_loss(p_hat, positions.float())
+            pos = positions.float()
+            if p_hat is not None:
+                probe_loss = F.smooth_l1_loss(p_hat, pos)
+            else:
+                probe_loss = F.smooth_l1_loss(self.probe(tok.float()), pos) + F.smooth_l1_loss(
+                    self.z_probe(pooled.float()), pos
+                )
 
         # Защита от седловой точки SIGReg в нуле. Нужна, если проектор не
         # использует BatchNorm (см. losses/auxiliary.py::variance_floor).
-        var_loss = variance_floor(z, self.cfg.var_target)
+        var_loss = variance_floor(pooled, self.cfg.var_target)
 
         total = (
             (1.0 - self.cfg.lamb)

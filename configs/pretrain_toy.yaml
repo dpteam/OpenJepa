@@ -37,6 +37,7 @@ model:
   lamb: 0.05          # вес SIGReg; 0.02-0.1 работает стабильно
   inv_weight: 0.5     # inverse-dynamics: держит в латенте управляемые факторы
   metric_weight: 1.0  # латентное расстояние должно быть пропорционально мировому
+  position_in_latent: true   # позиция — часть латента: планировщик читает её напрямую
   probe_weight: 1.0   # проба z -> позиция: стоимость планировщика в задаче
   sigreg_slices: 256
   stop_grad_target: false
@@ -52,5 +53,6 @@ train:
   amp: true
   workers: 0
   save_every: 10
-  probe_steps: 60     # дообучение пробы на eval-латентах (см. train/pretrain.py)
+  probe_lr: 3.0e-3
+  probe_steps: 400    # шагов дообучения пробы; 60 недостаточно (см. docs/14)
   grad_clip: 0
