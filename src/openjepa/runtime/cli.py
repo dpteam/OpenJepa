@@ -61,11 +61,11 @@ def cmd_eval(args: argparse.Namespace) -> None:
         goal_pos = rng.uniform(lo, hi, size=2)
         goal_frame = make_goal_frame(env, goal_pos)
         eng.reset()
+        eng.set_goal(goal_frame)
 
         for t in range(args.steps):
-            s = eng.surprise(frame)
+            action, s = eng.step(frame)
             surprises.append(s)
-            action = eng.act(frame, goal_frame)
             frame = env.step(action)
 
         dist = float(np.linalg.norm(env.pos - goal_pos))
@@ -88,11 +88,12 @@ def cmd_demo(args: argparse.Namespace) -> None:
     goal_pos = np.array([env.cfg.size * 0.75, env.cfg.size * 0.3])
     goal_frame = make_goal_frame(env, goal_pos)
     eng.reset()
+    eng.set_goal(goal_frame)
 
     frames = [frame.copy()]
     t0 = time.time()
     for _ in range(args.steps):
-        action = eng.act(frame, goal_frame)
+        action, _ = eng.step(frame)
         frame = env.step(action)
         frames.append(frame.copy())
     dt = time.time() - t0
@@ -112,8 +113,11 @@ def cmd_serve(args: argparse.Namespace) -> None:
     GET  /health -> {"ok": true}
     """
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import threading
 
     eng = OpenJEPAEngine.from_checkpoint(args.ckpt, RuntimeConfig(device=args.device))
+    lock = threading.Lock()          # движок хранит состояние, он не потокобезопасен
+    goal_cache: dict[str, object] = {"key": None}
 
     def decode(payload: str) -> np.ndarray:
         raw = base64.b64decode(payload)
@@ -151,9 +155,14 @@ def cmd_serve(args: argparse.Namespace) -> None:
             req = json.loads(self.rfile.read(n) or b"{}")
             try:
                 frame = decode(req["frame"])
-                goal = decode(req["goal"])
-                action = eng.act(frame, goal)
-                self._json(200, {"action": action.tolist()})
+                with lock:
+                    # Перекодируем цель только если она изменилась: forward
+                    # энкодера на каждом шаге — самая дорогая часть после CEM.
+                    if req["goal"] != goal_cache["key"]:
+                        eng.set_goal(decode(req["goal"]))
+                        goal_cache["key"] = req["goal"]
+                    action, surprise = eng.step(frame)
+                self._json(200, {"action": action.tolist(), "surprise": surprise})
             except Exception as exc:  # pragma: no cover - сетевой путь
                 self._json(400, {"error": str(exc)})
 

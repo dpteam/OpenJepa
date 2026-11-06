@@ -19,7 +19,7 @@ Predictive Architecture) — подхода Янна ЛеКуна к модел�
 python -m pip install -e .          # или: pip install -r requirements.txt
 export PYTHONPATH=src               # Windows: $env:PYTHONPATH="src"
 
-python tests/run_all.py                              # 22 теста, ~40 секунд
+python tests/run_all.py                              # 29 тестов, ~40 секунд
 python -m openjepa.runtime.cli train --config configs/pretrain_toy.yaml
 python -m openjepa.runtime.cli eval  --ckpt runs/toy/best.pt --episodes 20
 python -m openjepa.runtime.cli demo  --ckpt runs/toy/best.pt --out runs/demo.png

@@ -59,10 +59,26 @@ def test_engine_state_shapes():
     eng = make_engine(ctx=2)
     env = BallEnv(BallEnvConfig(size=32), seed=0)
     frame = env.reset()
-    a = eng.act(frame, frame)
+    eng.set_goal(frame)
+    a, s = eng.step(frame)
     assert a.shape == (2,)
     assert np.all(np.abs(a) <= 1.0 + 1e-6)
     assert len(eng._hist) == 2
+    assert np.isfinite(s)
+
+
+def test_step_pushes_frame_once():
+    """step() не должен дублировать кадр в истории (иначе ломается скорость)."""
+    eng = make_engine(ctx=2)
+    env = BallEnv(BallEnvConfig(size=32), seed=4)
+    frame = env.reset()
+    eng.set_goal(frame)
+    eng.step(frame)
+    eng.step(frame)
+    eng.step(frame)
+    assert len(eng._hist) == 2  # deque(maxlen=2), но кадров добавлено ровно 3
+    z = eng.encode(frame)
+    assert torch.allclose(eng._hist[-1], z)
 
 
 def test_surprise_is_zero_on_first_frame_then_positive():
@@ -83,11 +99,12 @@ def test_reset_clears_state():
     eng = make_engine()
     env = BallEnv(BallEnvConfig(size=32), seed=2)
     f = env.reset()
-    eng.act(f, f)
+    eng.set_goal(f)
+    eng.step(f)
     assert len(eng._hist) > 0
     eng.reset()
     assert len(eng._hist) == 0
-    assert eng._prev_ctx is None
+    assert eng._ctx is None
 
 
 def test_goal_frame_does_not_disturb_env():

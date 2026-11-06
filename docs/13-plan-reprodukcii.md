@@ -142,7 +142,7 @@ python -m openjepa.runtime.cli eval  --ckpt runs/toy/best.pt --episodes 20
 
 ```
 [ ] окружение: torch >= 2.1, CUDA, 8+ GB VRAM
-[ ] tests/run_all.py -> 22/22
+[ ] tests/run_all.py -> 29/29
 [ ] smoke-конфиг -> 2 эпохи без NaN
 [ ] полный конфиг -> pred_loss падает
 [ ] eval -> успех > 50%

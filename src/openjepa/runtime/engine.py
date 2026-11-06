@@ -10,8 +10,17 @@
 пора думать, а не рефлекторно действовать. Это дешёвая и работающая
 аппроксимация метакогниции.
 
-Важная деталь: предиктор работает с контекстом из `ctx` латентов, поэтому
-движок хранит историю. Без неё нельзя восстановить скорость объекта.
+Две важные детали, которые легко испортить:
+
+1. **История.** Предиктор работает с контекстом из `ctx` латентов. Движок
+   хранит окно и сдвигает его на каждом новом кадре. Если случайно добавить
+   один и тот же кадр дважды (например, вызвать `surprise()` и `act()` на
+   одном наблюдении), «производная» исказится вдвое, и планировщик начнёт
+   ошибаться. Поэтому основной метод — `step()`: он обрабатывает кадр ровно
+   один раз.
+
+2. **Цель.** Кадр-цель кодируется один раз через `set_goal()`. Иначе каждый
+   шаг тратит целый forward энкодера на перекодирование одной и той же цели.
 """
 
 from __future__ import annotations
@@ -56,7 +65,17 @@ def model_ctx(model: torch.nn.Module) -> int:
 
 
 class OpenJEPAEngine:
-    """Единая точка входа для инференса."""
+    """Единая точка входа для инференса.
+
+    Типичный цикл:
+
+        eng = OpenJEPAEngine.from_checkpoint("runs/toy/best.pt")
+        eng.reset()
+        eng.set_goal(goal_frame)
+        for frame in camera:
+            action, surprise = eng.step(frame)
+            robot.apply(action)
+    """
 
     def __init__(self, model: torch.nn.Module, cfg: dict, runtime: RuntimeConfig | None = None):
         self.cfg = cfg
@@ -74,8 +93,9 @@ class OpenJEPAEngine:
             action_dim=cfg["model"]["action_dim"],
         )
         self._hist: deque[torch.Tensor] = deque(maxlen=self.ctx)
-        self._prev_ctx: torch.Tensor | None = None
+        self._ctx: torch.Tensor | None = None       # окно, заканчивающееся на t
         self._prev_action: torch.Tensor | None = None
+        self._goal: torch.Tensor | None = None
 
     # ------------------------------------------------------------------ #
     @classmethod
@@ -109,11 +129,19 @@ class OpenJEPAEngine:
 
     def reset(self) -> None:
         self._hist.clear()
-        self._prev_ctx = None
+        self._ctx = None
         self._prev_action = None
 
+    def set_goal(self, goal) -> None:
+        """Кодирует цель один раз. Принимает кадр или уже готовый латент."""
+        if isinstance(goal, torch.Tensor) and goal.ndim >= 2:
+            zg = goal.to(self.device)
+        else:
+            zg = self.encode(goal)
+        self._goal = zg.reshape(1, -1)
+
     def _push(self, z: torch.Tensor) -> torch.Tensor:
-        """Добавляет латент в историю и возвращает контекст (1,ctx,D)."""
+        """Добавляет латент в историю и возвращает окно (1,ctx,D)."""
         if not self._hist:
             for _ in range(self.ctx):
                 self._hist.append(z)
@@ -127,49 +155,53 @@ class OpenJEPAEngine:
         return self.model.encode(self._to_tensor(obs))
 
     @torch.no_grad()
-    def surprise(self, obs) -> float:
-        """Насколько текущее наблюдение неожиданно для модели.
+    def step(self, obs, goal=None) -> tuple[np.ndarray | None, float]:
+        """Обрабатывает один кадр: считает surprise, планирует, выдаёт действие.
 
-        Если истории нет, удивление = 0.
+        Возвращает `(action, surprise)`. `action is None`, если цель не задана.
+
+        Это единственный метод, который следует вызывать в цикле управления:
+        он гарантирует, что кадр попадает в историю ровно один раз.
         """
         z = self.encode(obs)
-        if self._prev_ctx is None or self._prev_action is None:
-            self._prev_ctx = self._push(z)
-            return 0.0
-        pred = self.model.predict_next(self._prev_ctx, self._prev_action.unsqueeze(0))
-        s = float((pred - z).pow(2).mean().sqrt())
-        self._prev_ctx = self._push(z)
-        return s
+
+        surprise = 0.0
+        if self._ctx is not None and self._prev_action is not None:
+            pred = self.model.predict_next(self._ctx, self._prev_action.unsqueeze(0))
+            surprise = float((pred - z).pow(2).mean().sqrt())
+
+        ctx = self._push(z)
+        self._ctx = ctx
+
+        if goal is not None:
+            self.set_goal(goal)
+        if self._goal is None:
+            return None, surprise
+
+        actions, _ = self.planner.plan(ctx, self._goal, prev_action=self._prev_action)
+        action = actions[:, 0].clamp(-self.rt.action_clip, self.rt.action_clip)
+        self._prev_action = action.squeeze(0)
+        return action.squeeze(0).cpu().numpy(), surprise
+
+    # ------------------------------------------------------------------ #
+    # Удобные обёртки. ВНИМАНИЕ: каждая из них добавляет кадр в историю,
+    # поэтому не вызывайте `act()` и `surprise()` на одном и том же кадре —
+    # используйте `step()`.
+    # ------------------------------------------------------------------ #
+    @torch.no_grad()
+    def surprise(self, obs) -> float:
+        return self.step(obs, goal=None)[1]
 
     @torch.no_grad()
-    def act(self, obs, goal, use_planner: bool = True) -> np.ndarray:
-        """Возвращает действие (A,) в диапазоне [-1, 1].
-
-        `use_planner=False` оставлен для совместимости: быстрый контур —
-        это отдельная обученная политика (`GoalEncoder`), которой в этом
-        чекпоинте нет, поэтому по умолчанию всегда используется CEM.
-        """
-        z = self.encode(obs)
-        ctx = self._push(z)
-
-        if isinstance(goal, torch.Tensor) and goal.ndim >= 2:
-            zg = goal
-        else:
-            zg = self.encode(goal)
-        if zg.ndim == 1:
-            zg = zg.unsqueeze(0)
-
-        actions, _ = self.planner.plan(ctx, zg, prev_action=self._prev_action)
-        action = actions[:, 0].clamp(-self.rt.action_clip, self.rt.action_clip)
-
-        self._prev_ctx = ctx
-        self._prev_action = action.squeeze(0)
-        return action.squeeze(0).cpu().numpy()
+    def act(self, obs, goal=None) -> np.ndarray:
+        action, _ = self.step(obs, goal)
+        if action is None:
+            raise ValueError("цель не задана: вызовите set_goal() или передайте goal")
+        return action
 
     @torch.no_grad()
     def observe(self, obs) -> None:
-        """Обновить внутреннее состояние без выбора действия."""
-        self._prev_ctx = self._push(self.encode(obs))
+        self.step(obs, goal=None)
 
 
 def make_goal_frame(env, pos: np.ndarray) -> np.ndarray:
